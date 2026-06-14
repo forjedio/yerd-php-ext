@@ -1,5 +1,7 @@
 # yerd-php-ext (`yerd-dump`)
 
+A [Forjed](https://forjed.io) Project
+
 A native PHP extension, written in Rust with [`ext-php-rs`](https://ext-php.rs), that
 captures Laravel/PHP telemetry (dumps, queries, jobs, views, requests, logs, cache) and
 streams it as newline-delimited JSON to **Yerd's** loopback dump server for display in
@@ -125,3 +127,7 @@ src/
 tests/integration/  TCP sink + fixture + smoke.sh
 .github/workflows/  ci.yml, release.yml
 ```
+
+## License
+
+[MIT](LICENSE)
