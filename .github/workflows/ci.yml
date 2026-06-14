@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Cancel superseded PR runs, but never cancel a push to a branch (so merged-commit
+# CI signal is preserved): head_ref is set only for pull_request events.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  lint-test-smoke:
+    name: lint • test • smoke (linux x86_64, PHP 8.3)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install PHP (NTS, with dev headers + php-config)
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.3"
+          extensions: opcache, pdo_sqlite
+          ini-values: opcache.enable_cli=1
+          tools: none
+
+      - name: Install libclang (bindgen) + build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y llvm-dev libclang-dev clang
+
+      - name: Install Rust (stable, fmt + clippy)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format check
+        run: cargo fmt --all --check
+
+      - name: Clippy (deny warnings)
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Unit tests
+        run: cargo test --all
+
+      - name: Build (debug)
+        run: cargo build
+
+      - name: Integration smoke
+        run: |
+          cp target/debug/libyerd_dump.so /tmp/yerd_dump.so
+          EXT_SO=/tmp/yerd_dump.so PHP=$(which php) PORT=2304 bash tests/integration/smoke.sh

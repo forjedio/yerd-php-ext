@@ -1,0 +1,190 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v0.1.0) — for manual dry runs"
+        required: true
+
+permissions:
+  contents: write       # create the GitHub Release
+  id-token: write       # provenance attestation
+  attestations: write   # provenance attestation
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build ${{ matrix.php }} • ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ["8.3", "8.4", "8.5"]
+        include:
+          - { os: macos-14,        label: macos-aarch64, target_os: macos, arch: aarch64 }
+          # macos-13 is retired (Dec 2025); macos-15-intel is the last hosted
+          # Intel image (available ~until Aug 2027 — see RELEASING.md).
+          - { os: macos-15-intel,  label: macos-x86_64,  target_os: macos, arch: x86_64 }
+          - { os: ubuntu-22.04,    label: linux-x86_64,  target_os: linux, arch: x86_64 }
+          - { os: ubuntu-22.04-arm, label: linux-aarch64, target_os: linux, arch: aarch64 }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install PHP (NTS, non-debug, with dev headers)
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: opcache, pdo_sqlite
+          tools: none
+
+      - name: Install libclang (bindgen)
+        run: |
+          if [ "${{ matrix.target_os }}" = "linux" ]; then
+            sudo apt-get update && sudo apt-get install -y llvm-dev libclang-dev clang
+          else
+            brew install llvm
+            libdir="$(brew --prefix llvm)/lib"
+            test -f "$libdir/libclang.dylib" || { echo "FAIL: libclang.dylib not at $libdir"; exit 1; }
+            echo "LIBCLANG_PATH=$libdir" >> "$GITHUB_ENV"
+          fi
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Set deployment target (macOS portability)
+        if: matrix.target_os == 'macos'
+        run: echo "MACOSX_DEPLOYMENT_TARGET=11.0" >> "$GITHUB_ENV"
+
+      - name: Build (release)
+        run: cargo build --release
+
+      - name: Stage artifact
+        id: stage
+        shell: bash
+        run: |
+          name="yerd-dump-${{ matrix.php }}-${{ matrix.label }}.so"
+          if [ "${{ matrix.target_os }}" = "macos" ]; then
+            src="target/release/libyerd_dump.dylib"
+          else
+            src="target/release/libyerd_dump.so"
+          fi
+          mkdir -p dist
+          cp "$src" "dist/$name"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "path=dist/$name" >> "$GITHUB_OUTPUT"
+
+      - name: Build-id property guard (absolute, not self-comparison)
+        shell: bash
+        run: |
+          set -euo pipefail
+          info="$(php -i)"
+          echo "$info" | grep -E "Thread Safety => disabled" \
+            || { echo "FAIL: PHP build is ZTS (must be NTS)"; exit 1; }
+          echo "$info" | grep -E "Debug Build => no" \
+            || { echo "FAIL: PHP is a debug build"; exit 1; }
+          echo "PHP API:"; echo "$info" | grep -E "PHP API|Zend Extension Build|PHP Extension Build" || true
+          # Optional cross-vendor check: Yerd publishes the exact build-id its
+          # static-php.dev PHP reports per minor. When provided, assert equality.
+          if [ -n "${EXPECTED_PHP_EXTENSION_BUILD:-}" ]; then
+            echo "$info" | grep -F "$EXPECTED_PHP_EXTENSION_BUILD" \
+              || { echo "FAIL: build-id mismatch vs Yerd's PHP"; exit 1; }
+          fi
+
+      - name: Load smoke (opcache on)
+        shell: bash
+        run: |
+          php -d extension="$PWD/${{ steps.stage.outputs.path }}" \
+              -d opcache.enable_cli=1 -m | grep -qi yerd \
+            || { echo "FAIL: extension did not load"; exit 1; }
+
+      - name: Integration smoke
+        shell: bash
+        run: |
+          EXT_SO="$PWD/${{ steps.stage.outputs.path }}" PHP="$(which php)" PORT=2304 \
+            bash tests/integration/smoke.sh
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: ${{ steps.stage.outputs.path }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.stage.outputs.name }}
+          path: ${{ steps.stage.outputs.path }}
+          if-no-files-found: error
+
+  publish:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: staging
+          merge-multiple: true
+
+      - name: Generate checksums + manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd staging
+          ls -la
+          # The download contract Yerd verifies. Prefer the dispatch input tag
+          # (on workflow_dispatch GITHUB_REF_NAME is the branch, not the tag).
+          version="${{ github.event.inputs.tag || github.ref_name }}"
+          minors="8.3 8.4 8.5"
+          cells=4
+          count=$(ls yerd-dump-*.so | wc -l | tr -d ' ')
+          expected=$(( $(echo $minors | wc -w) * cells ))
+          if [ "$count" -ne "$expected" ]; then
+            echo "FAIL: expected $expected artifacts, found $count (a cell was dropped)"; exit 1
+          fi
+          sha256sum yerd-dump-*.so > SHA256SUMS
+          {
+            echo "{"
+            echo "  \"version\": \"$version\","
+            echo "  \"php_minors\": [\"8.3\", \"8.4\", \"8.5\"],"
+            echo "  \"files\": ["
+            first=1
+            for f in yerd-dump-*.so; do
+              # name pattern: yerd-dump-<minor>-<os>-<arch>.so
+              base="${f%.so}"; rest="${base#yerd-dump-}"
+              php="${rest%%-*}"; osarch="${rest#*-}"
+              os="${osarch%%-*}"; arch="${osarch#*-}"
+              sha=$(sha256sum "$f" | cut -d' ' -f1)
+              size=$(wc -c < "$f" | tr -d ' ')
+              [ $first -eq 1 ] || echo ","
+              first=0
+              printf '    {"name":"%s","php":"%s","os":"%s","arch":"%s","sha256":"%s","size":%s}' \
+                "$f" "$php" "$os" "$arch" "$sha" "$size"
+            done
+            echo ""
+            echo "  ]"
+            echo "}"
+          } > manifest.json
+          cat manifest.json
+          # Validate manifest is well-formed JSON.
+          python3 -c "import json,sys; json.load(open('manifest.json'))"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          files: |
+            staging/yerd-dump-*.so
+            staging/SHA256SUMS
+            staging/manifest.json
+          fail_on_unmatched_files: true
+          generate_release_notes: true

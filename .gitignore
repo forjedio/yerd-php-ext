@@ -1,0 +1,10 @@
+/target
+/dist
+.DS_Store
+.idea/
+*.so
+*.dylib
+
+# Agent operating guides (kept local, not committed)
+CLAUDE.md
+AGENTS.md

@@ -1,0 +1,9 @@
+# PHP extensions reference Zend symbols (zend_*, php_*) that are NOT present at
+# link time — they are provided by the PHP binary at dlopen time. macOS's linker
+# rejects undefined symbols by default, so allow dynamic lookup. (Linux shared
+# objects already permit undefined symbols, so no flag is needed there.)
+[target.x86_64-apple-darwin]
+rustflags = ["-C", "link-arg=-undefined", "-C", "link-arg=dynamic_lookup"]
+
+[target.aarch64-apple-darwin]
+rustflags = ["-C", "link-arg=-undefined", "-C", "link-arg=dynamic_lookup"]
