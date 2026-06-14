@@ -47,9 +47,13 @@ jobs:
           if [ "${{ matrix.target_os }}" = "linux" ]; then
             # clang/libclang >= 15: ubuntu-22.04's default llvm-14 emmintrin.h
             # breaks bindgen on PHP's SSE2 intrinsics ("invalid conversion
-            # ... __m128i"). clang-15 (in jammy, both x86_64 and arm64) fixes it.
-            sudo apt-get update && sudo apt-get install -y clang-15 libclang-15-dev
+            # ... __m128i"). Force llvm-15 via both LIBCLANG_PATH (which libclang
+            # loads) and -resource-dir (which clang headers it uses). clang-15 is
+            # in jammy for both x86_64 and arm64.
+            sudo apt-get update && sudo apt-get install -y clang-15 libclang-15-dev llvm-15-dev
             echo "LIBCLANG_PATH=/usr/lib/llvm-15/lib" >> "$GITHUB_ENV"
+            echo "BINDGEN_EXTRA_CLANG_ARGS=-resource-dir=$(clang-15 -print-resource-dir)" >> "$GITHUB_ENV"
+            clang-15 --version | head -1
           else
             brew install llvm
             libdir="$(brew --prefix llvm)/lib"

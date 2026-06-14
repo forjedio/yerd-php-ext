@@ -33,10 +33,17 @@ jobs:
         run: |
           # clang/libclang >= 15: the default libclang-dev on ubuntu-22.04 is
           # llvm-14, whose emmintrin.h trips bindgen on PHP's SSE2 intrinsics
-          # ("invalid conversion ... __m128i"). clang-15 parses them correctly.
+          # ("invalid conversion ... __m128i"). Force bindgen to use llvm-15:
+          #   - LIBCLANG_PATH: which libclang.so clang-sys loads
+          #   - -resource-dir: which clang headers (the fixed emmintrin.h) it uses
+          # The resource-dir is belt-and-braces in case libclang-14 is still found.
           sudo apt-get update
-          sudo apt-get install -y clang-15 libclang-15-dev
+          sudo apt-get install -y clang-15 libclang-15-dev llvm-15-dev
           echo "LIBCLANG_PATH=/usr/lib/llvm-15/lib" >> "$GITHUB_ENV"
+          echo "BINDGEN_EXTRA_CLANG_ARGS=-resource-dir=$(clang-15 -print-resource-dir)" >> "$GITHUB_ENV"
+          echo "clang-15: $(clang-15 --version | head -1)"
+          echo "resource-dir: $(clang-15 -print-resource-dir)"
+          ls -l /usr/lib/llvm-15/lib/libclang.so*
 
       - name: Install Rust (stable, fmt + clippy)
         uses: dtolnay/rust-toolchain@stable
