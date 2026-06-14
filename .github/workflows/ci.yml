@@ -58,6 +58,14 @@ jobs:
           components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Isolate the cache PER PHP VERSION. ext-php-rs compiles against the
+          # active PHP's headers and the built .so embeds that PHP's module API
+          # number — but cargo/rust-cache can't see the external PHP changed, so a
+          # cross-version cache hit yields an .so with the wrong API (load fails:
+          # "module API=... PHP compiled with module API=..."). The key prefix
+          # also evicts any previously-poisoned caches.
+          key: php-${{ matrix.php }}
 
       - name: Format check
         run: cargo fmt --all --check

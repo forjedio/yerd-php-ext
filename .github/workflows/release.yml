@@ -77,6 +77,12 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Isolate the cache per PHP version + cell. ext-php-rs embeds the active
+          # PHP's module API number in the built .so; a cross-version cache hit
+          # produces an .so PHP refuses to load. The key prefix also evicts any
+          # previously-poisoned caches.
+          key: php-${{ matrix.php }}-${{ matrix.cell.label }}
 
       - name: Set deployment target (macOS portability)
         if: matrix.cell.target_os == 'macos'
