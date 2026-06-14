@@ -21,9 +21,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Cover the ABI floor (8.0) and ceiling (8.5) on PRs so a version-specific
-        # compile/observer break is caught here, not only at release time.
-        php: ["8.0", "8.5"]
+        # Cover the supported floor (8.2) and ceiling (8.5) on PRs so a
+        # version-specific compile/observer break is caught here, not only at
+        # release time.
+        php: ["8.2", "8.5"]
     steps:
       - uses: actions/checkout@v4
 

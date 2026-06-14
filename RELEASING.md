@@ -19,7 +19,10 @@ Release containing:
 
 ## Build matrix
 
-PHP minors: **8.0, 8.1, 8.2, 8.3, 8.4, 8.5** (the range Yerd supports).
+PHP minors: **8.2, 8.3, 8.4, 8.5**.
+
+> Floor is 8.2: `ext-php-rs` 0.15.15 requires PHP ≥ 8.1, and `zend_observer` only observes
+> internal functions (PDO queries) from 8.2+. PHP 8.0/8.1 are also EOL.
 
 | cell | runner |
 |------|--------|
@@ -27,7 +30,7 @@ PHP minors: **8.0, 8.1, 8.2, 8.3, 8.4, 8.5** (the range Yerd supports).
 | linux x86_64 | `ubuntu-22.04` |
 | linux aarch64 | `ubuntu-22.04-arm` |
 
-`18` artifacts total (6 minors × 3 cells). Yerd is Apple-Silicon-only, so there is no
+`12` artifacts total (4 minors × 3 cells). Yerd is Apple-Silicon-only, so there is no
 Intel macOS cell. The publish job fails if any cell is missing.
 
 ## `manifest.json` schema (source of truth — keep in sync with Yerd)
@@ -35,7 +38,7 @@ Intel macOS cell. The publish job fails if any cell is missing.
 ```jsonc
 {
   "version": "v0.1.0",
-  "php_minors": ["8.0", "8.1", "8.2", "8.3", "8.4", "8.5"],
+  "php_minors": ["8.2", "8.3", "8.4", "8.5"],
   "files": [
     { "name": "yerd-dump-8.3-linux-x86_64.so",
       "php": "8.3", "os": "linux", "arch": "x86_64",

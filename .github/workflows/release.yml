@@ -23,12 +23,15 @@ jobs:
     runs-on: ${{ matrix.cell.os }}
     strategy:
       fail-fast: false
-      # Two real dimensions → full cross product (6 minors × 3 cells = 18 jobs).
+      # Two real dimensions → full cross product (4 minors × 3 cells = 12 jobs).
       # NOTE: do NOT express the cells via `include:` on a php-only base matrix —
       # include entries whose keys aren't in the base overwrite each other, so
       # only the last cell survives. `cell` must be a first-class matrix key.
+      #
+      # Floor is 8.2: ext-php-rs 0.15.15 requires >= 8.1, and zend_observer only
+      # observes internal functions (PDO queries) from 8.2+ (8.0/8.1 are EOL).
       matrix:
-        php: ["8.0", "8.1", "8.2", "8.3", "8.4", "8.5"]
+        php: ["8.2", "8.3", "8.4", "8.5"]
         cell:
           # Yerd supports Apple Silicon only (no Intel macOS), so there is no
           # macos-x86_64 cell.
@@ -58,10 +61,16 @@ jobs:
             echo "BINDGEN_EXTRA_CLANG_ARGS=-resource-dir=$(clang-15 -print-resource-dir)" >> "$GITHUB_ENV"
             clang-15 --version | head -1
           else
+            # The runner's Xcode clang (15.0.0) trips bindgen on arm_neon.h fp16
+            # intrinsics. Force a newer brew clang via both LIBCLANG_PATH and an
+            # explicit -resource-dir (the resource-dir is the part that actually
+            # bypasses the broken headers — same fix as Linux).
             brew install llvm
-            libdir="$(brew --prefix llvm)/lib"
-            test -f "$libdir/libclang.dylib" || { echo "FAIL: libclang.dylib not at $libdir"; exit 1; }
-            echo "LIBCLANG_PATH=$libdir" >> "$GITHUB_ENV"
+            prefix="$(brew --prefix llvm)"
+            test -f "$prefix/lib/libclang.dylib" || { echo "FAIL: libclang.dylib not at $prefix/lib"; exit 1; }
+            echo "LIBCLANG_PATH=$prefix/lib" >> "$GITHUB_ENV"
+            echo "BINDGEN_EXTRA_CLANG_ARGS=-resource-dir=$("$prefix/bin/clang" -print-resource-dir)" >> "$GITHUB_ENV"
+            "$prefix/bin/clang" --version | head -1
           fi
 
       - name: Install Rust (stable)
@@ -155,7 +164,7 @@ jobs:
           # The download contract Yerd verifies. Prefer the dispatch input tag
           # (on workflow_dispatch GITHUB_REF_NAME is the branch, not the tag).
           version="${{ github.event.inputs.tag || github.ref_name }}"
-          minors="8.0 8.1 8.2 8.3 8.4 8.5"
+          minors="8.2 8.3 8.4 8.5"
           cells=3
           count=$(ls yerd-dump-*.so | wc -l | tr -d ' ')
           expected=$(( $(echo $minors | wc -w) * cells ))
