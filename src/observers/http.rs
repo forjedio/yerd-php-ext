@@ -18,7 +18,7 @@ use ext_php_rs::zend::{ExecuteData, Function};
 
 use crate::frame::{truncate, FIELD_CAP};
 use crate::request::{self, Feature};
-use crate::zend_util::arg;
+use crate::zend_util::{arg, caller_location};
 
 /// Handle `curl_exec($handle)` completion: read `curl_getinfo` and emit `http`.
 pub fn on_curl_exec_end(ex: &ExecuteData) {
@@ -51,6 +51,7 @@ pub fn on_curl_exec_end(ex: &ExecuteData) {
         .unwrap_or_default()
         .to_owned();
     let url = truncate(&url, FIELD_CAP);
+    let (file, line) = caller_location(ex);
 
     request::emit(Feature::Http, "http", move || {
         serde_json::json!({
@@ -58,6 +59,8 @@ pub fn on_curl_exec_end(ex: &ExecuteData) {
             "url": url,
             "status": status,
             "duration_ms": duration_ms,
+            "file": file,
+            "line": line,
         })
     });
 }

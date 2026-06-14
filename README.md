@@ -20,7 +20,7 @@ function definition) plus RINIT/RSHUTDOWN hooks. It observes:
 | Category | Observed symbol |
 |----------|-----------------|
 | `dump`   | `Symfony\Component\VarDumper\VarDumper::dump` (the chokepoint `dump()`/`dd()` funnel through) |
-| `query`  | `PDO::exec`, `PDO::query`, `PDOStatement::execute` (framework-agnostic) |
+| `query`  | `PDO::exec`, `PDO::query`, `PDOStatement::execute` (framework-agnostic); emits `sql` + `bindings` + `sql_full` (interpolated) + `row_count` |
 | `job` / `view` / `cache` / `log` | `Illuminate\Events\Dispatcher::dispatch` (event class → category) |
 | `request`| assembled at RSHUTDOWN: `uri`/`method`/`ip` from `$_SERVER` (Yerd's proxy sets the real `REQUEST_URI` incl. query string), `status` from SAPI globals |
 | `http`   | `curl_exec` (also covers Guzzle / PSR-18 clients that use the curl handler); reads `curl_getinfo` for url/status/time |
@@ -50,6 +50,26 @@ Outgoing HTTP telemetry is a **new category** and a contract change Yerd must mi
   empty on older curl).
 
 Until Yerd ships these, set `features.http=false` (or omit it) and behaviour is unchanged.
+
+### `query` payload gained `sql_full` and `row_count`
+
+The `query` payload now includes (all additive / backward-compatible):
+- **`sql_full`** — the statement with bound values interpolated for display
+  (e.g. `… WHERE "id" = 7 AND name = 'Ada'`), alongside `sql` (parameterized) + `bindings`.
+  Display-only (never executed): strings quoted/escaped, `NULL`/bool handled, and `?`/`:name`
+  inside string literals left untouched. Yerd's GUI should show `sql_full` for the runnable query.
+- **`row_count`** (int or `null`) — affected/returned rows. Exact for writes
+  (`PDO::exec` return value; `rowCount()` for INSERT/UPDATE/DELETE). For SELECTs it is
+  driver-dependent (accurate on buffered MySQL, often `0` on SQLite/Postgres, since rows
+  returned aren't known until fetch); `null` when unavailable.
+
+### `file` / `line` added to more categories
+
+Call-site resolution now skips all `vendor/` frames and reports the user's **app** frame.
+`file`/`line` are present on: **`dump`**, **`query`**, **`http`**, **`log`**, **`cache`**,
+**`view`**, and **`job`**. Caveats: `job` events fire inside the queue worker during
+execution, so their `file:line` is usually empty / not the dispatch site; `view`/`cache`
+point at the app call that triggered them. `request` has no single call site (omitted).
 
 ## Build & test (local, macOS/Linux)
 

@@ -33,7 +33,8 @@ enum Sym {
 fn classify(class: Option<&str>, func: Option<&str>) -> Option<Sym> {
     match (class, func?) {
         (Some("Symfony\\Component\\VarDumper\\VarDumper"), "dump") => Some(Sym::Dump),
-        (Some("PDO"), "exec" | "query") => Some(Sym::Query(queries::QueryKind::PdoSqlArg)),
+        (Some("PDO"), "exec") => Some(Sym::Query(queries::QueryKind::PdoExec)),
+        (Some("PDO"), "query") => Some(Sym::Query(queries::QueryKind::PdoQuery)),
         (Some("PDOStatement"), "execute") => Some(Sym::Query(queries::QueryKind::StmtExecute)),
         (Some("Illuminate\\Events\\Dispatcher"), "dispatch") => Some(Sym::Dispatch),
         (None, "curl_exec") => Some(Sym::Http),
@@ -91,12 +92,12 @@ impl FcallObserver for YerdObserver {
         });
     }
 
-    fn end(&self, ex: &ExecuteData, _retval: Option<&Zval>) {
+    fn end(&self, ex: &ExecuteData, retval: Option<&Zval>) {
         guard(|| {
             let (class, func) = fn_identity(ex);
             match classify(class.as_deref(), func.as_deref()) {
                 Some(Sym::Query(kind)) if request::active(Feature::Queries) => {
-                    queries::on_end(ex, kind);
+                    queries::on_end(ex, kind, retval);
                 }
                 Some(Sym::Http) if request::active(Feature::Http) => {
                     http::on_curl_exec_end(ex);

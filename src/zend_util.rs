@@ -69,19 +69,12 @@ pub fn arg(ex: &ExecuteData, n: u32) -> Option<&ext_php_rs::types::Zval> {
     unsafe { ex.zend_call_arg(n as usize).map(|z| &*z) }
 }
 
-/// Framework-internal path fragments to skip when resolving the call site, so we
-/// report the user's app frame (e.g. `app/.../Foo.php:36`) rather than the
-/// var-dumper helper or the framework's DB layer that wraps the observed call.
-const INTERNAL_MARKERS: &[&str] = &[
-    "/vendor/symfony/var-dumper/",
-    "/vendor/laravel/framework/src/Illuminate/Database/",
-    "/vendor/laravel/framework/src/Illuminate/Support/", // dump()/dd() helpers
-    "/vendor/illuminate/database/",
-    "/vendor/illuminate/support/",
-];
-
+/// Whether a source path is dependency code (Composer `vendor/`). We skip these
+/// when resolving the call site so we report the user's app frame
+/// (e.g. `app/.../Foo.php:36`) rather than the framework internals that wrap the
+/// observed call — the dump/query/cache/log/HTTP helper lives in `vendor/`.
 fn is_internal_path(path: &str) -> bool {
-    INTERNAL_MARKERS.iter().any(|m| path.contains(m))
+    path.contains("/vendor/")
 }
 
 /// Resolve the originating application `file:line` for the observed call.
