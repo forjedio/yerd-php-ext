@@ -57,8 +57,19 @@ got="$($PHP "${PHP_FLAGS[@]}" -r 'echo ini_get("yerd_dump.state_path");')"
 
 echo "==> [3/4] all categories stream to the sink"
 cat > "$STATE" <<JSON
-{"enabled":true,"port":$PORT,"features":{"dumps":true,"queries":true,"jobs":true,"views":true,"requests":true,"logs":true,"cache":true}}
+{"enabled":true,"port":$PORT,"features":{"dumps":true,"queries":true,"jobs":true,"views":true,"requests":true,"logs":true,"cache":true,"http":true}}
 JSON
+
+# Local HTTP target so the fixture's curl_exec produces an `http` frame.
+HTTP_PORT=$((PORT + 1000))
+python3 -m http.server "$HTTP_PORT" --bind 127.0.0.1 >/dev/null 2>&1 &
+HTTPD=$!
+for _ in $(seq 1 50); do
+  if (exec 3<>"/dev/tcp/127.0.0.1/$HTTP_PORT") 2>/dev/null; then exec 3>&- 3<&-; break; fi
+  sleep 0.1
+done
+export YERD_TEST_HTTP_URL="http://127.0.0.1:$HTTP_PORT/users?page=2"
+
 # sink.py args: <port> <out-file> <inactivity-timeout-seconds>
 python3 "$HERE/sink.py" "$PORT" "$FRAMES" 6 &
 SINK=$!
@@ -69,6 +80,8 @@ for _ in $(seq 1 50); do
 done
 $PHP "${PHP_FLAGS[@]}" "$FIXTURE" >/dev/null 2>&1 || fail "fixture run errored"
 wait "$SINK" 2>/dev/null || true
+kill "$HTTPD" 2>/dev/null || true
+unset YERD_TEST_HTTP_URL
 
 python3 - "$FRAMES" <<'PY' || exit 1
 import json, sys
@@ -83,7 +96,7 @@ for line in open(sys.argv[1]):
     for k in ("category", "ts", "site", "request_id", "payload"):
         assert k in d, f"frame missing key {k}: {d}"
 print("  captured:", cats)
-expected = {"dump", "query", "job", "cache", "log", "view", "request"}
+expected = {"dump", "query", "job", "cache", "log", "view", "request", "http"}
 missing = expected - set(cats)
 if missing:
     print("SMOKE FAIL: missing categories:", missing, file=sys.stderr)

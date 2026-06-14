@@ -66,5 +66,14 @@ namespace {
     $d->dispatch(new Illuminate\Log\Events\MessageLogged());
     $d->dispatch('composing: profile.show', []);
 
+    // outgoing HTTP (only when the smoke provides a local target + curl exists)
+    $http_url = getenv('YERD_TEST_HTTP_URL');
+    if ($http_url && function_exists('curl_init')) {
+        $ch = curl_init($http_url);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 5);
+        curl_exec($ch);
+    }
+
     echo "fixture-complete\n";
 }
