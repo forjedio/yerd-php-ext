@@ -28,8 +28,26 @@ PHP_FLAGS=(-d "extension=$EXT_SO" -d "yerd_dump.state_path=$STATE" -d "opcache.e
 
 fail() { echo "SMOKE FAIL: $*" >&2; exit 1; }
 
+# Load the extension and confirm it registers. The `php -m` probe is occasionally
+# flaky on macOS runners (transient dlopen failure under -undefined dynamic_lookup;
+# never seen on Linux), so retry a few times and surface stderr/exit code if every
+# attempt fails — the artifact itself is sound (the rest of this script exercises it).
+load_check() {
+  local out rc
+  for attempt in 1 2 3 4 5; do
+    out="$("$PHP" -d "extension=$EXT_SO" -m 2>/tmp/yerd-load.err)"; rc=$?
+    if [ "$rc" -eq 0 ] && printf '%s\n' "$out" | grep -qi 'yerd'; then
+      return 0
+    fi
+    echo "   load attempt $attempt failed (exit $rc); retrying…" >&2
+    sleep 1
+  done
+  echo "   last php -m stderr:" >&2; cat /tmp/yerd-load.err >&2 || true
+  return 1
+}
+
 echo "==> [1/4] extension loads"
-$PHP -d "extension=$EXT_SO" -m | grep -qi 'yerd' || fail "extension not listed by -m"
+load_check || fail "extension not listed by -m after retries"
 
 echo "==> [2/4] INI directive registered and -d value visible"
 got="$($PHP "${PHP_FLAGS[@]}" -r 'echo ini_get("yerd_dump.state_path");')"

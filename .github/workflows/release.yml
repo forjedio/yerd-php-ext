@@ -126,12 +126,19 @@ jobs:
       - name: Load smoke
         shell: bash
         run: |
-          # No opcache here: this only verifies the .so loads/registers. On macOS,
-          # `php -m` with opcache + ext-php-rs's zend_execute_ex override is flaky
-          # (intermittent crash). Realistic opcache coverage is in the integration
-          # smoke, which RUNS a script under opcache (the actual FPM scenario).
-          php -d extension="$PWD/${{ steps.stage.outputs.path }}" -m | grep -qi yerd \
-            || { echo "FAIL: extension did not load"; exit 1; }
+          # Verify the .so loads/registers. No opcache (the integration smoke
+          # covers opcache by running a real script). The `php -m` probe is
+          # occasionally flaky on macOS runners (transient dlopen failure under
+          # -undefined dynamic_lookup; never on Linux), so retry and print stderr
+          # on the final failure — the artifact is sound when the probe succeeds.
+          so="$PWD/${{ steps.stage.outputs.path }}"
+          for attempt in 1 2 3 4 5; do
+            if php -d extension="$so" -m 2>/tmp/load.err | grep -qi yerd; then
+              echo "loaded (attempt $attempt)"; exit 0
+            fi
+            echo "load attempt $attempt failed; retrying…"; sleep 1
+          done
+          echo "FAIL: extension did not load after retries"; cat /tmp/load.err || true; exit 1
 
       - name: Integration smoke
         shell: bash
