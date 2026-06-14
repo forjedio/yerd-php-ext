@@ -48,6 +48,13 @@ pub fn fn_identity(ex: &ExecuteData) -> (Option<String>, Option<String>) {
     }
 }
 
+/// The unique object id (handle) of a Zend object. Stable within a request, so
+/// it correlates calls on the same statement: `bindValue` → `execute` → `fetchAll`.
+#[must_use]
+pub fn object_handle(obj: &ext_php_rs::types::ZendObject) -> u32 {
+    obj.handle
+}
+
 /// Number of arguments passed to the currently-executing call.
 #[must_use]
 pub fn num_args(ex: &ExecuteData) -> u32 {

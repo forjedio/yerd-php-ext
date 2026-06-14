@@ -36,6 +36,10 @@ fn classify(class: Option<&str>, func: Option<&str>) -> Option<Sym> {
         (Some("PDO"), "exec") => Some(Sym::Query(queries::QueryKind::PdoExec)),
         (Some("PDO"), "query") => Some(Sym::Query(queries::QueryKind::PdoQuery)),
         (Some("PDOStatement"), "execute") => Some(Sym::Query(queries::QueryKind::StmtExecute)),
+        (Some("PDOStatement"), "bindValue" | "bindParam") => {
+            Some(Sym::Query(queries::QueryKind::BindValue))
+        }
+        (Some("PDOStatement"), "fetchAll") => Some(Sym::Query(queries::QueryKind::FetchAll)),
         (Some("Illuminate\\Events\\Dispatcher"), "dispatch") => Some(Sym::Dispatch),
         (None, "curl_exec") => Some(Sym::Http),
         _ => None,
@@ -71,9 +75,15 @@ impl FcallObserver for YerdObserver {
                         dumps::on_dump(ex);
                     }
                 }
-                Sym::Query(_) => {
+                Sym::Query(kind) => {
                     if request::active(Feature::Queries) {
-                        queries::on_begin();
+                        match kind {
+                            queries::QueryKind::PdoExec
+                            | queries::QueryKind::PdoQuery
+                            | queries::QueryKind::StmtExecute => queries::on_begin(),
+                            queries::QueryKind::BindValue => queries::on_bind(ex),
+                            queries::QueryKind::FetchAll => {}
+                        }
                     }
                 }
                 Sym::Dispatch => {

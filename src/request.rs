@@ -133,6 +133,16 @@ pub fn emit<F>(feature: Feature, category: &str, make_payload: F)
 where
     F: FnOnce() -> Value,
 {
+    emit_at(feature, category, frame::now_ms(), make_payload);
+}
+
+/// Like [`emit`] but with an explicit timestamp — used by deferred query frames
+/// (emitted at fetch/RSHUTDOWN time but stamped with the original execute time so
+/// GUI ordering is preserved).
+pub fn emit_at<F>(feature: Feature, category: &str, ts: u64, make_payload: F)
+where
+    F: FnOnce() -> Value,
+{
     CTX.with(|c| {
         let mut guard = c.borrow_mut();
         let Some(ctx) = guard.as_mut() else { return };
@@ -140,13 +150,7 @@ where
             return;
         }
         let payload = make_payload();
-        let line = frame::build_line(
-            category,
-            frame::now_ms(),
-            &ctx.site,
-            &ctx.request_id,
-            payload,
-        );
+        let line = frame::build_line(category, ts, &ctx.site, &ctx.request_id, payload);
         ctx.conn.send(ctx.state.port, &line);
     });
 }

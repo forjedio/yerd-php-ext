@@ -39,9 +39,13 @@ extern "C" fn rinit(_ty: i32, _mod_num: i32) -> i32 {
     0
 }
 
-/// RSHUTDOWN: emit the request summary and tear down the request (closes socket).
+/// RSHUTDOWN: flush any deferred query frames, emit the request summary, and tear
+/// down the request (closes socket).
 extern "C" fn rshutdown(_ty: i32, _mod_num: i32) -> i32 {
-    panic::guard(request::on_rshutdown);
+    panic::guard(|| {
+        observers::queries::flush();
+        request::on_rshutdown();
+    });
     0
 }
 

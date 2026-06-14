@@ -20,7 +20,7 @@ function definition) plus RINIT/RSHUTDOWN hooks. It observes:
 | Category | Observed symbol |
 |----------|-----------------|
 | `dump`   | `Symfony\Component\VarDumper\VarDumper::dump` (the chokepoint `dump()`/`dd()` funnel through) |
-| `query`  | `PDO::exec`, `PDO::query`, `PDOStatement::execute` (framework-agnostic); emits `sql` + `bindings` + `sql_full` (interpolated) + `row_count` |
+| `query`  | `PDO::{exec,query}`, `PDOStatement::{execute,bindValue,bindParam,fetchAll}` (framework-agnostic); emits `sql` + `bindings` + `sql_full` (interpolated) + `row_count` |
 | `job` / `view` / `cache` / `log` | `Illuminate\Events\Dispatcher::dispatch` (event class → category) |
 | `request`| assembled at RSHUTDOWN: `uri`/`method`/`ip` from `$_SERVER` (Yerd's proxy sets the real `REQUEST_URI` incl. query string), `status` from SAPI globals |
 | `http`   | `curl_exec` (also covers Guzzle / PSR-18 clients that use the curl handler); reads `curl_getinfo` for url/status/time |
@@ -58,10 +58,16 @@ The `query` payload now includes (all additive / backward-compatible):
   (e.g. `… WHERE "id" = 7 AND name = 'Ada'`), alongside `sql` (parameterized) + `bindings`.
   Display-only (never executed): strings quoted/escaped, `NULL`/bool handled, and `?`/`:name`
   inside string literals left untouched. Yerd's GUI should show `sql_full` for the runnable query.
-- **`row_count`** (int or `null`) — affected/returned rows. Exact for writes
-  (`PDO::exec` return value; `rowCount()` for INSERT/UPDATE/DELETE). For SELECTs it is
-  driver-dependent (accurate on buffered MySQL, often `0` on SQLite/Postgres, since rows
-  returned aren't known until fetch); `null` when unavailable.
+- **`row_count`** (int or `null`) — writes use the affected-row count (`PDO::exec` return
+  value / `rowCount()`); **reads** are deferred and counted from the rows returned by
+  `fetchAll` (so SELECTs report the real count, not the driver-dependent `rowCount()`).
+  Reads fetched row-by-row or never fetched fall back to `rowCount()` / `null`.
+
+**Laravel parameter binding:** Eloquent binds via `PDOStatement::bindValue()` and calls
+`execute()` with no args, so the extension accumulates `bindValue`/`bindParam` per
+statement (correlated by object handle) to populate `bindings` and `sql_full`. Deferred
+read frames keep their execute-time `ts`, so ordering is preserved even though they're
+emitted at `fetchAll` (or flushed at request end).
 
 ### `file` / `line` added to more categories
 
