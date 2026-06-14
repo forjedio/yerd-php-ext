@@ -59,6 +59,9 @@ pub struct Features {
     pub requests: bool,
     pub logs: bool,
     pub cache: bool,
+    /// Outgoing HTTP client calls (curl/Guzzle). New category — Yerd must add
+    /// the `http` DumpCategory + GUI tab and set `features.http` in state.json.
+    pub http: bool,
 }
 
 /// The `state.json` document Yerd writes.

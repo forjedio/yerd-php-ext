@@ -25,6 +25,7 @@ pub enum Feature {
     Requests,
     Logs,
     Cache,
+    Http,
 }
 
 impl Features {
@@ -38,6 +39,7 @@ impl Features {
             Feature::Requests => self.requests,
             Feature::Logs => self.logs,
             Feature::Cache => self.cache,
+            Feature::Http => self.http,
         }
     }
 }
@@ -149,8 +151,9 @@ where
     });
 }
 
-/// Assemble and send the `request` summary frame from SAPI globals.
+/// Assemble and send the `request` summary frame.
 fn emit_request_summary() {
+    use ext_php_rs::types::Zval;
     use ext_php_rs::zend::{ProcessGlobals, SapiGlobals};
 
     CTX.with(|c| {
@@ -160,23 +163,38 @@ fn emit_request_summary() {
             return;
         }
 
+        // Prefer $_SERVER: under Yerd's FastCGI proxy, REQUEST_URI is the real
+        // path + query string and REQUEST_METHOD is the verb. (The SAPI
+        // request_info / SCRIPT_NAME path reads "/index.php" instead.) Fall back
+        // to SAPI request_info for non-FPM/CLI contexts where $_SERVER is absent.
+        let pg = ProcessGlobals::get();
+        let server = pg.http_server_vars();
+        let sv = |k: &str| {
+            server
+                .and_then(|s| s.get(k))
+                .and_then(Zval::str)
+                .map(str::to_owned)
+        };
+        let mut method = sv("REQUEST_METHOD").unwrap_or_default();
+        let mut uri = sv("REQUEST_URI").unwrap_or_default();
+        let ip = sv("REMOTE_ADDR").unwrap_or_default();
+        drop(pg);
+
         let sapi = SapiGlobals::get();
-        let info = sapi.request_info();
-        let method = info.request_method().unwrap_or("").to_owned();
-        let uri = info.request_uri().unwrap_or("").to_owned();
-        // Status via the SAPI globals (C-level), NOT the userland
-        // `http_response_code()` — reliable under fpm-fcgi at RSHUTDOWN.
+        if method.is_empty() {
+            method = sapi
+                .request_info()
+                .request_method()
+                .unwrap_or("")
+                .to_owned();
+        }
+        if uri.is_empty() {
+            uri = sapi.request_info().request_uri().unwrap_or("").to_owned();
+        }
+        // Status via the SAPI globals (C-level) — equivalent to the value
+        // `http_response_code()` returns, but without a userland call.
         let status = sapi.sapi_headers().http_response_code;
         drop(sapi);
-
-        let ip = {
-            let pg = ProcessGlobals::get();
-            pg.http_server_vars()
-                .and_then(|s| s.get("REMOTE_ADDR"))
-                .and_then(ext_php_rs::types::Zval::str)
-                .unwrap_or("")
-                .to_owned()
-        };
 
         let duration_ms = ctx.started.elapsed().as_secs_f64() * 1000.0;
         let payload = serde_json::json!({

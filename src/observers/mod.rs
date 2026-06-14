@@ -4,4 +4,5 @@
 
 pub mod dumps;
 pub mod events;
+pub mod http;
 pub mod queries;

@@ -3,7 +3,7 @@
 //! `enabled`/feature gate is applied later in `begin`/`end` — so toggling a
 //! feature via `state.json` takes effect without an FPM restart.
 
-use crate::observers::{dumps, events, queries};
+use crate::observers::{dumps, events, http, queries};
 use crate::panic::guard;
 use crate::request::{self, Feature};
 use crate::zend_util::fn_identity;
@@ -17,6 +17,8 @@ enum Sym {
     Dump,
     Query(queries::QueryKind),
     Dispatch,
+    /// Outgoing HTTP via `curl_exec` (handled in `end`).
+    Http,
 }
 
 /// Classify a `(class, function)` pair into an observed symbol, by identity only.
@@ -34,6 +36,7 @@ fn classify(class: Option<&str>, func: Option<&str>) -> Option<Sym> {
         (Some("PDO"), "exec" | "query") => Some(Sym::Query(queries::QueryKind::PdoSqlArg)),
         (Some("PDOStatement"), "execute") => Some(Sym::Query(queries::QueryKind::StmtExecute)),
         (Some("Illuminate\\Events\\Dispatcher"), "dispatch") => Some(Sym::Dispatch),
+        (None, "curl_exec") => Some(Sym::Http),
         _ => None,
     }
 }
@@ -82,6 +85,8 @@ impl FcallObserver for YerdObserver {
                         events::on_dispatch(ex);
                     }
                 }
+                // HTTP needs the response; handled in `end`.
+                Sym::Http => {}
             }
         });
     }
@@ -89,10 +94,14 @@ impl FcallObserver for YerdObserver {
     fn end(&self, ex: &ExecuteData, _retval: Option<&Zval>) {
         guard(|| {
             let (class, func) = fn_identity(ex);
-            if let Some(Sym::Query(kind)) = classify(class.as_deref(), func.as_deref()) {
-                if request::active(Feature::Queries) {
+            match classify(class.as_deref(), func.as_deref()) {
+                Some(Sym::Query(kind)) if request::active(Feature::Queries) => {
                     queries::on_end(ex, kind);
                 }
+                Some(Sym::Http) if request::active(Feature::Http) => {
+                    http::on_curl_exec_end(ex);
+                }
+                _ => {}
             }
         });
     }
@@ -123,6 +132,7 @@ mod tests {
             classify(Some("Illuminate\\Events\\Dispatcher"), Some("dispatch")),
             Some(Sym::Dispatch)
         ));
+        assert!(matches!(classify(None, Some("curl_exec")), Some(Sym::Http)));
     }
 
     #[test]

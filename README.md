@@ -22,7 +22,8 @@ function definition) plus RINIT/RSHUTDOWN hooks. It observes:
 | `dump`   | `Symfony\Component\VarDumper\VarDumper::dump` (the chokepoint `dump()`/`dd()` funnel through) |
 | `query`  | `PDO::exec`, `PDO::query`, `PDOStatement::execute` (framework-agnostic) |
 | `job` / `view` / `cache` / `log` | `Illuminate\Events\Dispatcher::dispatch` (event class → category) |
-| `request`| assembled from SAPI globals at RSHUTDOWN |
+| `request`| assembled at RSHUTDOWN: `uri`/`method`/`ip` from `$_SERVER` (Yerd's proxy sets the real `REQUEST_URI` incl. query string), `status` from SAPI globals |
+| `http`   | `curl_exec` (also covers Guzzle / PSR-18 clients that use the curl handler); reads `curl_getinfo` for url/status/time |
 
 Every observer body runs behind a panic firewall; all telemetry is best-effort and must
 never break the user's application.
@@ -36,6 +37,19 @@ not `-d zend_extension=<path>`. Yerd must wire `extension=`.
 The rest of the contract is unchanged: NDJSON loopback transport, the frame schema, the
 `yerd_dump.state_path` INI directive, `state.json`, and the
 `yerd-dump-<minor>-<os>-<arch>.so` artifact naming.
+
+### New `http` category (needs the Yerd side too)
+
+Outgoing HTTP telemetry is a **new category** and a contract change Yerd must mirror:
+
+- **`state.json`**: add `features.http` (bool). When absent/false the extension does not
+  observe `curl_exec` — fully backward compatible.
+- **Dump server / GUI**: add an `http` `DumpCategory` (+ counts + an "HTTP" tab).
+- **Frame payload** (`category: "http"`): `{ method, url, status (int), duration_ms (float) }`
+  — `url` is the effective URL incl. query string; `method` is best-effort (`effective_method`,
+  empty on older curl).
+
+Until Yerd ships these, set `features.http=false` (or omit it) and behaviour is unchanged.
 
 ## Build & test (local, macOS/Linux)
 
@@ -74,7 +88,7 @@ src/
   lib.rs        MINIT/RINIT/RSHUTDOWN + #[php_module]
   config.rs     INI directive + state.json
   observer.rs   the single fcall observer (symbol classification + dispatch)
-  observers/    per-category logic: dumps, queries, events
+  observers/    per-category logic: dumps, queries, events, http
   frame.rs      frame schema + serialized-line truncation
   transport.rs  non-blocking loopback TCP, connect-once-per-request
   request.rs    per-request state (thread-local) + emit
