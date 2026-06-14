@@ -31,8 +31,12 @@ jobs:
 
       - name: Install libclang (bindgen) + build deps
         run: |
+          # clang/libclang >= 15: the default libclang-dev on ubuntu-22.04 is
+          # llvm-14, whose emmintrin.h trips bindgen on PHP's SSE2 intrinsics
+          # ("invalid conversion ... __m128i"). clang-15 parses them correctly.
           sudo apt-get update
-          sudo apt-get install -y llvm-dev libclang-dev clang
+          sudo apt-get install -y clang-15 libclang-15-dev
+          echo "LIBCLANG_PATH=/usr/lib/llvm-15/lib" >> "$GITHUB_ENV"
 
       - name: Install Rust (stable, fmt + clippy)
         uses: dtolnay/rust-toolchain@stable
