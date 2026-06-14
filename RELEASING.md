@@ -19,21 +19,23 @@ Release containing:
 
 ## Build matrix
 
-| PHP minor | cell | runner |
-|-----------|------|--------|
-| 8.3 / 8.4 / 8.5 | macOS arm64 | `macos-14` |
-| 8.3 / 8.4 / 8.5 | macOS x86_64 | `macos-15-intel` |
-| 8.3 / 8.4 / 8.5 | linux x86_64 | `ubuntu-22.04` |
-| 8.3 / 8.4 / 8.5 | linux aarch64 | `ubuntu-22.04-arm` |
+PHP minors: **8.0, 8.1, 8.2, 8.3, 8.4, 8.5** (the range Yerd supports).
 
-`12` artifacts total (3 minors × 4 cells). The publish job fails if any cell is missing.
+| cell | runner |
+|------|--------|
+| macOS arm64 | `macos-14` |
+| linux x86_64 | `ubuntu-22.04` |
+| linux aarch64 | `ubuntu-22.04-arm` |
+
+`18` artifacts total (6 minors × 3 cells). Yerd is Apple-Silicon-only, so there is no
+Intel macOS cell. The publish job fails if any cell is missing.
 
 ## `manifest.json` schema (source of truth — keep in sync with Yerd)
 
 ```jsonc
 {
   "version": "v0.1.0",
-  "php_minors": ["8.3", "8.4", "8.5"],
+  "php_minors": ["8.0", "8.1", "8.2", "8.3", "8.4", "8.5"],
   "files": [
     { "name": "yerd-dump-8.3-linux-x86_64.so",
       "php": "8.3", "os": "linux", "arch": "x86_64",
@@ -60,9 +62,7 @@ Yerd's static-php.dev PHP reports for that minor; the guard then asserts equalit
   supports end-user hosts older than glibc 2.35, switch the Linux cells to build inside an
   old-glibc container (e.g. `debian:bullseye`, glibc 2.31) and validate that
   `shivammathur/setup-php` works in-container or install PHP headers directly there.
-- **macOS x86_64 sunset.** `macos-15-intel` is the last hosted Intel image (~until Aug
-  2027). After that, the macOS x86_64 cell needs a self-hosted Intel runner or
-  cross-compilation.
-- **Adding a PHP minor.** Add it to the `php` matrix list in `release.yml` (and the count
-  check) and re-tag. Each minor needs its own build (`ZEND_MODULE_API_NO` is per-minor).
+- **Adding a PHP minor.** Add it to the `php` matrix list in `release.yml` (the `minors`
+  count check derives from it) and re-tag. Each minor needs its own build
+  (`ZEND_MODULE_API_NO` is per-minor).
 ```

@@ -19,18 +19,21 @@ env:
 
 jobs:
   build:
-    name: build ${{ matrix.php }} • ${{ matrix.label }}
-    runs-on: ${{ matrix.os }}
+    name: build ${{ matrix.php }} • ${{ matrix.cell.label }}
+    runs-on: ${{ matrix.cell.os }}
     strategy:
       fail-fast: false
+      # Two real dimensions → full cross product (6 minors × 3 cells = 18 jobs).
+      # NOTE: do NOT express the cells via `include:` on a php-only base matrix —
+      # include entries whose keys aren't in the base overwrite each other, so
+      # only the last cell survives. `cell` must be a first-class matrix key.
       matrix:
-        php: ["8.3", "8.4", "8.5"]
-        include:
-          - { os: macos-14,        label: macos-aarch64, target_os: macos, arch: aarch64 }
-          # macos-13 is retired (Dec 2025); macos-15-intel is the last hosted
-          # Intel image (available ~until Aug 2027 — see RELEASING.md).
-          - { os: macos-15-intel,  label: macos-x86_64,  target_os: macos, arch: x86_64 }
-          - { os: ubuntu-22.04,    label: linux-x86_64,  target_os: linux, arch: x86_64 }
+        php: ["8.0", "8.1", "8.2", "8.3", "8.4", "8.5"]
+        cell:
+          # Yerd supports Apple Silicon only (no Intel macOS), so there is no
+          # macos-x86_64 cell.
+          - { os: macos-14,         label: macos-aarch64, target_os: macos, arch: aarch64 }
+          - { os: ubuntu-22.04,     label: linux-x86_64,  target_os: linux, arch: x86_64 }
           - { os: ubuntu-22.04-arm, label: linux-aarch64, target_os: linux, arch: aarch64 }
     steps:
       - uses: actions/checkout@v4
@@ -44,7 +47,7 @@ jobs:
 
       - name: Install libclang (bindgen)
         run: |
-          if [ "${{ matrix.target_os }}" = "linux" ]; then
+          if [ "${{ matrix.cell.target_os }}" = "linux" ]; then
             # clang/libclang >= 15: ubuntu-22.04's default llvm-14 emmintrin.h
             # breaks bindgen on PHP's SSE2 intrinsics ("invalid conversion
             # ... __m128i"). Force llvm-15 via both LIBCLANG_PATH (which libclang
@@ -67,7 +70,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Set deployment target (macOS portability)
-        if: matrix.target_os == 'macos'
+        if: matrix.cell.target_os == 'macos'
         run: echo "MACOSX_DEPLOYMENT_TARGET=11.0" >> "$GITHUB_ENV"
 
       - name: Build (release)
@@ -77,8 +80,8 @@ jobs:
         id: stage
         shell: bash
         run: |
-          name="yerd-dump-${{ matrix.php }}-${{ matrix.label }}.so"
-          if [ "${{ matrix.target_os }}" = "macos" ]; then
+          name="yerd-dump-${{ matrix.php }}-${{ matrix.cell.label }}.so"
+          if [ "${{ matrix.cell.target_os }}" = "macos" ]; then
             src="target/release/libyerd_dump.dylib"
           else
             src="target/release/libyerd_dump.so"
@@ -152,18 +155,20 @@ jobs:
           # The download contract Yerd verifies. Prefer the dispatch input tag
           # (on workflow_dispatch GITHUB_REF_NAME is the branch, not the tag).
           version="${{ github.event.inputs.tag || github.ref_name }}"
-          minors="8.3 8.4 8.5"
-          cells=4
+          minors="8.0 8.1 8.2 8.3 8.4 8.5"
+          cells=3
           count=$(ls yerd-dump-*.so | wc -l | tr -d ' ')
           expected=$(( $(echo $minors | wc -w) * cells ))
           if [ "$count" -ne "$expected" ]; then
             echo "FAIL: expected $expected artifacts, found $count (a cell was dropped)"; exit 1
           fi
           sha256sum yerd-dump-*.so > SHA256SUMS
+          # Derive the php_minors JSON array from $minors so it can't drift.
+          php_minors_json=$(echo "$minors" | tr ' ' '\n' | sed 's/.*/"&"/' | paste -sd, -)
           {
             echo "{"
             echo "  \"version\": \"$version\","
-            echo "  \"php_minors\": [\"8.3\", \"8.4\", \"8.5\"],"
+            echo "  \"php_minors\": [$php_minors_json],"
             echo "  \"files\": ["
             first=1
             for f in yerd-dump-*.so; do

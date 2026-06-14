@@ -16,15 +16,21 @@ env:
 
 jobs:
   lint-test-smoke:
-    name: lint • test • smoke (linux x86_64, PHP 8.3)
+    name: lint • test • smoke (linux x86_64, PHP ${{ matrix.php }})
     runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        # Cover the ABI floor (8.0) and ceiling (8.5) on PRs so a version-specific
+        # compile/observer break is caught here, not only at release time.
+        php: ["8.0", "8.5"]
     steps:
       - uses: actions/checkout@v4
 
       - name: Install PHP (NTS, with dev headers + php-config)
         uses: shivammathur/setup-php@v2
         with:
-          php-version: "8.3"
+          php-version: ${{ matrix.php }}
           extensions: opcache, pdo_sqlite
           ini-values: opcache.enable_cli=1
           tools: none
