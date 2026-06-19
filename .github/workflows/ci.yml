@@ -87,15 +87,19 @@ jobs:
   # Independent of the Rust crate above: build the upstream pcov C extension from
   # its pinned source and assert it loads, so a pcov toolchain/version break is
   # caught on PRs rather than only when cutting a pcov-v* release. Covers the
-  # floor (8.2) and ceiling (8.5) only — the full minor × cell matrix runs in
-  # release-pcov.yml. Mirrors that workflow's pin and smoke check.
+  # floor (8.2) and ceiling (8.5), and BOTH toolchains (linux + the Homebrew-PHP
+  # macOS path, which needs the pcre2 header fix) — the full minor × cell matrix
+  # runs in release-pcov.yml. Mirrors that workflow's pin, build and smoke check.
   pcov-build-smoke:
-    name: pcov build • smoke (linux x86_64, PHP ${{ matrix.php }})
-    runs-on: ubuntu-22.04
+    name: pcov build • smoke (${{ matrix.cell.label }}, PHP ${{ matrix.php }})
+    runs-on: ${{ matrix.cell.os }}
     strategy:
       fail-fast: false
       matrix:
         php: ["8.2", "8.5"]
+        cell:
+          - { os: ubuntu-22.04, label: linux-x86_64, target_os: linux }
+          - { os: macos-14,     label: macos-aarch64, target_os: macos }
     env:
       PCOV_VERSION: "1.0.12"
     steps:
@@ -117,6 +121,13 @@ jobs:
       - name: Build pcov
         run: |
           set -euo pipefail
+          # macOS: pcov pulls in PHP's php_pcre.h, which #includes "pcre2.h" —
+          # a header that lives in the Homebrew pcre2 keg, not PHP's include dir.
+          # Point CPPFLAGS at it (same fix as release-pcov.yml). No-op on Linux.
+          if [ "${{ matrix.cell.target_os }}" = "macos" ]; then
+            brew install pcre2
+            export CPPFLAGS="-I$(brew --prefix pcre2)/include${CPPFLAGS:+ $CPPFLAGS}"
+          fi
           cd pcov-src
           phpize
           ./configure --enable-pcov
@@ -128,4 +139,4 @@ jobs:
           if [ -f pcov-src/modules/pcov.so ]; then so="pcov-src/modules/pcov.so"; else so="pcov-src/.libs/pcov.so"; fi
           php -d extension="$PWD/$so" -d display_startup_errors=1 -r \
             'exit(extension_loaded("pcov") && function_exists("pcov\\start") && function_exists("pcov\\collect") ? 0 : 1);'
-          echo "ok: pcov ${{ matrix.php }} built and loaded"
+          echo "ok: pcov ${{ matrix.php }} (${{ matrix.cell.label }}) built and loaded"

@@ -83,6 +83,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # macOS only: pcov includes PHP's ext/pcre/php_pcre.h, which #includes
+          # "pcre2.h". With Homebrew PHP that header lives in the separate pcre2
+          # keg (not in PHP's include dir), so the compile fails with
+          # "'pcre2.h' file not found". Add the keg's include dir to CPPFLAGS.
+          # (Linux's setup-php ships pcre2 headers inline, so no flag is needed
+          # there.)
+          if [ "${{ matrix.cell.target_os }}" = "macos" ]; then
+            brew install pcre2   # idempotent; PHP already depends on it
+            export CPPFLAGS="-I$(brew --prefix pcre2)/include${CPPFLAGS:+ $CPPFLAGS}"
+            echo "CPPFLAGS=$CPPFLAGS"
+          fi
           cd pcov-src
           phpize
           ./configure --enable-pcov
