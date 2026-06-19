@@ -16,6 +16,11 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  # Pinned upstream krakjoe/pcov release tag, built per cell alongside yerd-dump
+  # (see the build-pcov job). v1.0.12 (2024-12-04) is the latest tag and the
+  # version PECL/windows.php.net ship for PHP 8.5; its source has no upper-bound
+  # PHP_VERSION_ID gate, so it compiles across 8.2–8.5. Bump to adopt a newer pcov.
+  PCOV_VERSION: "1.0.12"
 
 jobs:
   build:
@@ -159,9 +164,130 @@ jobs:
           path: ${{ steps.stage.outputs.path }}
           if-no-files-found: error
 
+  # pcov — the upstream krakjoe/pcov code-coverage driver — rides the SAME v*
+  # release as yerd-dump so the repo has a single release stream (yerd-dump's
+  # consumer fetches /releases/latest/download/manifest.json; a separate pcov
+  # release would steal "latest" and 404 that URL). It is built from upstream C
+  # with the standard PHP extension toolchain (NO Rust/libclang). Its artifacts
+  # are published under a SEPARATE pcov-manifest.json (never merged into
+  # manifest.json) so yerd's (php,os,arch)-only matcher can never grab a pcov .so
+  # when it wants yerd-dump. This job is required: if pcov breaks, `publish`
+  # (needs: build-pcov) does not run and the whole release is blocked.
+  build-pcov:
+    name: pcov ${{ matrix.php }} • ${{ matrix.cell.label }}
+    runs-on: ${{ matrix.cell.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ["8.2", "8.3", "8.4", "8.5"]
+        cell:
+          - { os: macos-14,         label: macos-aarch64, target_os: macos, arch: aarch64 }
+          - { os: ubuntu-22.04,     label: linux-x86_64,  target_os: linux, arch: x86_64 }
+          - { os: ubuntu-22.04-arm, label: linux-aarch64, target_os: linux, arch: aarch64 }
+    steps:
+      - name: Install PHP (NTS, non-debug, with dev headers + phpize)
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          # Do NOT add pcov here — we build it from source. coverage:none avoids
+          # setup-php pulling in a pcov/xdebug of its own.
+          coverage: none
+          tools: none
+
+      - name: Set deployment target (macOS portability)
+        if: matrix.cell.target_os == 'macos'
+        run: echo "MACOSX_DEPLOYMENT_TARGET=11.0" >> "$GITHUB_ENV"
+
+      - name: Fetch pinned pcov source
+        shell: bash
+        run: |
+          set -euo pipefail
+          url="https://github.com/krakjoe/pcov/archive/refs/tags/v${PCOV_VERSION}.tar.gz"
+          echo "Fetching $url"
+          curl -fsSL "$url" -o pcov-src.tar.gz
+          mkdir -p pcov-src
+          tar -xzf pcov-src.tar.gz -C pcov-src --strip-components=1
+          test -f pcov-src/pcov.c || { echo "FAIL: pcov.c not found in source tarball"; exit 1; }
+
+      - name: Build pcov (phpize && configure && make)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # macOS only: pcov includes PHP's ext/pcre/php_pcre.h, which #includes
+          # "pcre2.h". With Homebrew PHP that header lives in the separate pcre2
+          # keg (not in PHP's include dir), so the compile fails with
+          # "'pcre2.h' file not found". Add the keg's include dir to CPPFLAGS.
+          # (Linux's setup-php ships pcre2 headers inline, so no flag is needed.)
+          if [ "${{ matrix.cell.target_os }}" = "macos" ]; then
+            brew install pcre2   # idempotent; PHP already depends on it
+            export CPPFLAGS="-I$(brew --prefix pcre2)/include${CPPFLAGS:+ $CPPFLAGS}"
+            echo "CPPFLAGS=$CPPFLAGS"
+          fi
+          cd pcov-src
+          phpize
+          ./configure --enable-pcov
+          make -j"$(getconf _NPROCESSORS_ONLN)"
+
+      - name: Stage artifact
+        id: stage
+        shell: bash
+        run: |
+          set -euo pipefail
+          name="pcov-${{ matrix.php }}-${{ matrix.cell.label }}.so"
+          # phpize/libtool puts the loadable module at modules/pcov.so; on some
+          # configs the real object is .libs/pcov.so behind a libtool wrapper.
+          if [ -f pcov-src/modules/pcov.so ]; then
+            src="pcov-src/modules/pcov.so"
+          elif [ -f pcov-src/.libs/pcov.so ]; then
+            src="pcov-src/.libs/pcov.so"
+          else
+            echo "FAIL: built pcov.so not found"; find pcov-src -name 'pcov*.so' -o -name 'pcov*.dylib'; exit 1
+          fi
+          mkdir -p dist
+          cp "$src" "dist/$name"
+          file "dist/$name" || true
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "path=dist/$name" >> "$GITHUB_OUTPUT"
+
+      - name: PHP build-property guard (NTS + non-debug)
+        shell: bash
+        run: |
+          set -euo pipefail
+          info="$(php -i)"
+          echo "$info" | grep -E "Thread Safety => disabled" \
+            || { echo "FAIL: PHP build is ZTS (must be NTS)"; exit 1; }
+          echo "$info" | grep -E "Debug Build => no" \
+            || { echo "FAIL: PHP is a debug build"; exit 1; }
+          echo "PHP API:"; echo "$info" | grep -E "PHP API|Zend Extension Build|PHP Extension Build" || true
+
+      - name: Load + namespace smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Hard per-minor gate: the .so must load AND expose the pcov\ namespace
+          # functions. Explicit exit codes (assert() is a no-op when
+          # zend.assertions=-1); retry to absorb macOS dlopen flakiness.
+          so="$PWD/${{ steps.stage.outputs.path }}"
+          for attempt in 1 2 3 4 5; do
+            if php -d extension="$so" -d display_startup_errors=1 -r \
+                 'exit(extension_loaded("pcov") && function_exists("pcov\\start") && function_exists("pcov\\collect") ? 0 : 1);' \
+                 2>/tmp/load.err; then
+              echo "ok: pcov loaded with namespace functions (attempt $attempt)"; exit 0
+            fi
+            echo "load attempt $attempt failed; retrying…"; sleep 1
+          done
+          echo "FAIL: pcov did not load / missing namespace functions after retries"; cat /tmp/load.err || true; exit 1
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.stage.outputs.name }}
+          path: ${{ steps.stage.outputs.path }}
+          if-no-files-found: error
+
   publish:
     name: publish release
-    needs: build
+    needs: [build, build-pcov]
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
@@ -172,7 +298,7 @@ jobs:
           path: staging
           merge-multiple: true
 
-      - name: Generate checksums + manifest
+      - name: Generate checksums + manifests
         shell: bash
         run: |
           set -euo pipefail
@@ -217,6 +343,40 @@ jobs:
           # Validate manifest is well-formed JSON.
           python3 -c "import json,sys; json.load(open('manifest.json'))"
 
+          # --- pcov: its OWN manifest (pcov-manifest.json) + checksums, SAME
+          # schema, NEVER merged into manifest.json above. yerd's yerd-dump
+          # matcher only reads manifest.json, so it can't see pcov; yerd's pcov
+          # downloader reads pcov-manifest.json from this same release. ---
+          pcount=$(ls pcov-*.so | wc -l | tr -d ' ')
+          if [ "$pcount" -ne "$expected" ]; then
+            echo "FAIL: expected $expected pcov artifacts, found $pcount (a cell was dropped)"; exit 1
+          fi
+          sha256sum pcov-*.so > SHA256SUMS-pcov
+          {
+            echo "{"
+            echo "  \"version\": \"$version\","
+            echo "  \"php_minors\": [$php_minors_json],"
+            echo "  \"files\": ["
+            first=1
+            for f in pcov-*.so; do
+              # name pattern: pcov-<minor>-<os>-<arch>.so
+              base="${f%.so}"; rest="${base#pcov-}"
+              php="${rest%%-*}"; osarch="${rest#*-}"
+              os="${osarch%%-*}"; arch="${osarch#*-}"
+              sha=$(sha256sum "$f" | cut -d' ' -f1)
+              size=$(wc -c < "$f" | tr -d ' ')
+              [ $first -eq 1 ] || echo ","
+              first=0
+              printf '    {"name":"%s","php":"%s","os":"%s","arch":"%s","sha256":"%s","size":%s}' \
+                "$f" "$php" "$os" "$arch" "$sha" "$size"
+            done
+            echo ""
+            echo "  ]"
+            echo "}"
+          } > pcov-manifest.json
+          cat pcov-manifest.json
+          python3 -c "import json,sys; json.load(open('pcov-manifest.json'))"
+
       # Single provenance attestation over all artifacts (1 Rekor call, not 12).
       # Non-blocking: a transient Sigstore/Rekor outage must not sink a release —
       # the .so artifacts + SHA256SUMS (integrity) still publish; provenance is
@@ -225,7 +385,9 @@ jobs:
         uses: actions/attest-build-provenance@v2
         continue-on-error: true
         with:
-          subject-path: staging/yerd-dump-*.so
+          subject-path: |
+            staging/yerd-dump-*.so
+            staging/pcov-*.so
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -235,5 +397,8 @@ jobs:
             staging/yerd-dump-*.so
             staging/SHA256SUMS
             staging/manifest.json
+            staging/pcov-*.so
+            staging/SHA256SUMS-pcov
+            staging/pcov-manifest.json
           fail_on_unmatched_files: true
           generate_release_notes: true

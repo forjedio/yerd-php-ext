@@ -16,13 +16,14 @@ See [`RELEASING.md`](RELEASING.md) for the release process.
 
 ## Also published here: `pcov`
 
-For convenience this repo *additionally* builds and publishes the upstream
+Each `v*` release *additionally* carries the upstream
 [`krakjoe/pcov`](https://github.com/krakjoe/pcov) code-coverage driver (pinned to
 `v1.0.12`, PHP 8.2–8.5) so Yerd can download and load it the same way it loads `yerd-dump`.
-pcov is **upstream C, not Rust** — it is fully isolated from the Rust crate: its own
-workflow (`release-pcov.yml`), its own `pcov-v*` tags, and its own `pcov-manifest.json` /
-`SHA256SUMS-pcov` (kept separate from `yerd-dump`'s `manifest.json` so the two never
-collide on the consumer side). See [`RELEASING.md`](RELEASING.md#releasing-pcov-separate-isolated-pipeline).
+pcov is **upstream C, not Rust** — built by the `build-pcov` job in `release.yml`. It rides
+the same release (one release stream keeps `releases/latest` correct for `yerd-dump`), but
+its artifacts are listed in a **separate `pcov-manifest.json`** (with `SHA256SUMS-pcov`),
+never merged into `yerd-dump`'s `manifest.json`, so the consumer's `(php, os, arch)` match
+can't confuse the two. See [`RELEASING.md`](RELEASING.md#pcov-rides-the-same-v-release).
 
 ## How it works
 

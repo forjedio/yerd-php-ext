@@ -71,53 +71,60 @@ Yerd's static-php.dev PHP reports for that minor; the guard then asserts equalit
 
 ---
 
-# Releasing `pcov` (separate, isolated pipeline)
+# `pcov` (rides the same `v*` release)
 
-This repo also publishes the upstream [`krakjoe/pcov`](https://github.com/krakjoe/pcov)
-code-coverage driver, built per (PHP minor × cell) the same way as `yerd-dump`, so Yerd
-can download and load it identically. **pcov is upstream C, not Rust** — it is built with
-the standard PHP extension toolchain (`phpize && ./configure --enable-pcov && make`) and is
-fully additive: it does not touch the Rust crate, `Cargo.toml`, `src/`, or `release.yml`.
+This repo *also* publishes the upstream [`krakjoe/pcov`](https://github.com/krakjoe/pcov)
+code-coverage driver, so Yerd can download and load it the same way it loads `yerd-dump`.
+**pcov is upstream C, not Rust** — the `build-pcov` job in `release.yml` builds it per
+(PHP minor × cell) with the standard PHP extension toolchain (`phpize && ./configure
+--enable-pcov && make`); no Rust, bindgen, or libclang.
 
-### Why it is a *separate* release
+pcov is built and attached to the **same `v*` release** as `yerd-dump` (not a separate
+`pcov-v*` tag). This is deliberate:
+
+- Yerd's `yerd-dump` consumer fetches `…/releases/latest/download/manifest.json`. A
+  separate pcov release would become the repo's **"latest"** and that URL would 404
+  (a pcov release has no `manifest.json`). One release stream keeps "latest" correct.
+- The `build-pcov` job is **required** — `publish` needs it, so if pcov fails to build the
+  entire release is blocked (all-or-nothing; every release carries both extensions).
+
+### Two manifests, never merged
 
 The Yerd consumer (`bin/yerdd/src/ext_install.rs`) matches manifest entries on
-`(php, os, arch)` **only — there is no extension-name field.** If pcov files were listed in
-`yerd-dump`'s `manifest.json`, Yerd could fetch a pcov `.so` when it wanted `yerd-dump`. So
-pcov is completely isolated:
+`(php, os, arch)` **only — there is no extension-name field.** So pcov gets its **own**
+manifest; its files are never listed in `yerd-dump`'s `manifest.json`:
 
 | | `yerd-dump` | `pcov` |
 |---|---|---|
-| Workflow | `release.yml` | `release-pcov.yml` |
-| Tag trigger | `v*` | `pcov-v*` |
+| Build job | `build` (Rust) | `build-pcov` (upstream C) |
 | Manifest | `manifest.json` | `pcov-manifest.json` |
 | Checksums | `SHA256SUMS` | `SHA256SUMS-pcov` |
 | Artifact name | `yerd-dump-<minor>-<os>-<arch>.so` | `pcov-<minor>-<os>-<arch>.so` |
 
-The `pcov-manifest.json` uses the **identical schema** to `manifest.json` (same `version` /
-`php_minors` / `files[{name,php,os,arch,sha256,size}]` shape). Yerd reads it from its own
-release asset. `release.yml` and `manifest.json` are never modified.
+Both manifests share the **identical schema** (`version` / `php_minors` /
+`files[{name,php,os,arch,sha256,size}]`) and are attached to the same release. Yerd's
+`yerd-dump` downloader reads `manifest.json`; Yerd's pcov downloader reads
+`pcov-manifest.json` from `…/releases/latest/download/`. `manifest.json` content is
+unchanged.
 
 ### Pinned pcov version
 
 pcov is pinned to **`v1.0.12`** (latest upstream tag, 2024-12-04) via the `PCOV_VERSION`
-env in `release-pcov.yml`, fetched as a tagged tarball in CI (no submodule). Its source has
-no upper-bound `PHP_VERSION_ID` gate, so it compiles across **8.2, 8.3, 8.4, 8.5** (8.5
-takes the `>= 80400` branch; PECL/windows.php.net also ship 1.0.12 for 8.5). Every leg runs
-a load + `pcov\start`/`pcov\collect` namespace smoke test, so an unsupported minor fails its
-build and the count guard blocks the release. To adopt a newer pcov, bump `PCOV_VERSION` (in
-both `release-pcov.yml` and `ci.yml`) and the tag.
+env in `release.yml`, fetched as a tagged tarball in CI (no submodule). Its source has no
+upper-bound `PHP_VERSION_ID` gate, so it compiles across **8.2, 8.3, 8.4, 8.5** (8.5 takes
+the `>= 80400` branch; PECL/windows.php.net also ship 1.0.12 for 8.5). Every leg runs a
+load + `pcov\start`/`pcov\collect` namespace smoke test, so an unsupported minor fails its
+build and the count guard blocks the release. To adopt a newer pcov, bump `PCOV_VERSION` in
+both `release.yml` and `ci.yml`. (The `pcov-manifest.json` `version` field is the `v*` tag,
+not the pcov upstream version — yerd matches on file `php`/`os`/`arch`, not `version`.)
 
-### Cut a pcov release
+> **macOS build note.** On the macOS cell pcov needs the Homebrew `pcre2` keg's headers on
+> `CPPFLAGS` (PHP's `php_pcre.h` `#include "pcre2.h"`); the job installs `pcre2` and sets the
+> flag. Linux ships those headers inline.
 
-```bash
-git tag pcov-v1.0.12
-git push origin pcov-v1.0.12
-```
+### Cutting a release (both extensions)
 
-This runs the matrix (4 minors × 3 cells = `12` artifacts) and creates a GitHub Release
-containing `pcov-<minor>-<os>-<arch>.so` for every cell, `SHA256SUMS-pcov`,
-`pcov-manifest.json`, and build-provenance attestations. The publish job fails if any cell
-is missing. The release version string is the tag (e.g. `pcov-v1.0.12`); re-tag with a
-trailing `-N` (e.g. `pcov-v1.0.12-2`) to re-publish the same pcov upstream version.
-```
+Nothing changes from the `yerd-dump` flow above — a single `v*` tag now produces both. The
+release contains, in addition to the `yerd-dump` assets: `pcov-<minor>-<os>-<arch>.so` for
+every cell, `SHA256SUMS-pcov`, and `pcov-manifest.json`. `12` pcov artifacts (4 × 3); the
+publish job fails if any cell is missing.
