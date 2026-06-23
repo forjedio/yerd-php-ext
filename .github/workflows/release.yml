@@ -113,7 +113,11 @@ jobs:
           fi
 
       - name: Install Rust (${{ matrix.cell.toolchain }})
-        uses: dtolnay/rust-toolchain@master
+        # SHA-pinned for reproducibility (this action ships only moving branch refs
+        # like @stable/@master and a moving @v1 lightweight tag — none immutable).
+        # The channel is selected per-cell via the `toolchain:` input, which a SHA
+        # pin still honours. SHA = the v1 tag commit.
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
           toolchain: ${{ matrix.cell.toolchain }}
 
@@ -131,7 +135,7 @@ jobs:
 
       - name: Build (release)
         # `+${toolchain}` pins per-cell: nightly on Windows (abi_vectorcall),
-        # stable elsewhere. dtolnay/rust-toolchain@master installed it above.
+        # stable elsewhere. The rust-toolchain step above installed that channel.
         run: cargo +${{ matrix.cell.toolchain }} build --release
 
       - name: Stage artifact
