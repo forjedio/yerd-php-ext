@@ -219,7 +219,7 @@ jobs:
           echo "ok: yerd-dump.dll loaded + INI directive visible"
 
       # NOTE: build-provenance attestation is done ONCE in the publish job over all
-      # artifacts (1 Rekor call instead of 12), so a transient Sigstore outage can't
+      # artifacts (1 Rekor call instead of 16), so a transient Sigstore outage can't
       # fail a build leg and skip the release.
 
       - name: Upload artifact
@@ -328,16 +328,18 @@ jobs:
           if [ "${{ matrix.cell.target_os }}" = "windows" ]; then
             name="pcov-${{ matrix.php }}-windows-x86_64.dll"
             # php-windows-builder leaves the build zip in ./artifacts. Assert
-            # exactly one, and that the build's OWN self-reported name is NTS + x64
-            # (reject -ts-/-x86 — the consumer can't express either). Capture the
-            # vsNN toolset token for the guard step.
+            # exactly one, and that the build's OWN self-reported name is NTS + 64-bit
+            # (reject -ts-/32-bit -x86 — the consumer can't express either). The arch
+            # token is "x86_64" by default and "x64" under ARTIFACT_NAMING_SCHEME=pecl,
+            # so accept both; "-x86.zip" (32-bit) matches neither. Capture the vsNN
+            # toolset token for the guard step.
             shopt -s nullglob
             zips=(artifacts/*.zip)
             [ "${#zips[@]}" -eq 1 ] || { echo "FAIL: expected 1 build zip, found ${#zips[@]}"; printf '%s\n' "${zips[@]:-<none>}"; exit 1; }
             zip="${zips[0]}"; base="$(basename "$zip")"
             echo "build zip: $base"
             case "$base" in *-nts-*) ;; *) echo "FAIL: build is not NTS: $base"; exit 1;; esac
-            case "$base" in *-x64.zip) ;; *) echo "FAIL: build is not x64: $base"; exit 1;; esac
+            case "$base" in *-x64.zip|*-x86_64.zip) ;; *) echo "FAIL: build is not 64-bit: $base"; exit 1;; esac
             vs="$(echo "$base" | grep -oE 'vs[0-9]+' | head -1)"
             [ -n "$vs" ] || { echo "FAIL: could not parse vsNN toolset from $base"; exit 1; }
             echo "vs=$vs" >> "$GITHUB_OUTPUT"

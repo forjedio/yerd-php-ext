@@ -12,7 +12,7 @@ git push origin v0.1.0
 This runs the matrix (PHP minor × cell), verifies each artifact, and creates a GitHub
 Release containing:
 
-- `yerd-dump-<minor>-<os>-<arch>.so` for every cell,
+- `yerd-dump-<minor>-<os>-<arch>.{so,dll}` for every cell (`.so` Linux/macOS, `.dll` Windows),
 - `SHA256SUMS`,
 - `manifest.json` (the download contract Yerd verifies),
 - build-provenance attestations.
