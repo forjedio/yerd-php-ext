@@ -236,8 +236,9 @@ jobs:
           [ "${#zips[@]}" -eq 1 ] || { echo "FAIL: expected 1 build zip, found ${#zips[@]}"; exit 1; }
           mkdir -p unzipped
           unzip -o "${zips[0]}" -d unzipped >/dev/null
-          dll="$(find unzipped -iname 'php_pcov.dll' | head -1)"
-          [ -n "$dll" ] || { echo "FAIL: php_pcov.dll not found"; find unzipped; exit 1; }
+          # Module inside is versioned (php_pcov-v1.0.12-8.2-nts-vs16-x86_64.dll).
+          dll="$(find unzipped -iname 'php_pcov*.dll' | head -1)"
+          [ -n "$dll" ] || { echo "FAIL: no php_pcov*.dll found"; find unzipped; exit 1; }
           php -d extension="$PWD/$dll" -d display_startup_errors=1 -r \
             'exit(extension_loaded("pcov") && function_exists("pcov\\start") && function_exists("pcov\\collect") ? 0 : 1);'
           echo "ok: pcov ${{ matrix.php }} (windows-x86_64) built and loaded"

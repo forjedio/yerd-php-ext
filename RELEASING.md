@@ -151,8 +151,9 @@ not the pcov upstream version — yerd matches on file `php`/`os`/`arch`, not `v
 > **Windows build note.** The Windows cell builds pcov from the same pinned `v1.0.12` tag via
 > `php/php-windows-builder/extension` (pinned action version) with `run-tests: false` (we
 > gate via our own load + namespace smoke, not pcov's upstream `.phpt` suite). The action
-> emits a build zip in `artifacts/`; the staging step asserts it is `-nts-`/`-x64`, extracts
-> `php_pcov.dll`, and renames it to `pcov-<minor>-windows-x86_64.dll`. `windows.php.net`
+> emits a build zip in `artifacts/`; the staging step asserts it is `-nts-`/64-bit, extracts
+> the versioned `php_pcov*.dll`, and renames it to `pcov-<minor>-windows-x86_64.dll`.
+> `windows.php.net`
 > ships prebuilt `1.0.12` DLLs for 8.2–8.5 (incl. 8.5/VS17), so the from-source build is
 > expected to succeed across all minors.
 

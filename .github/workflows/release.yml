@@ -345,8 +345,12 @@ jobs:
             echo "vs=$vs" >> "$GITHUB_OUTPUT"
             mkdir -p dist unzipped
             unzip -o "$zip" -d unzipped >/dev/null
-            dll="$(find unzipped -iname 'php_pcov.dll' | head -1)"
-            [ -n "$dll" ] || { echo "FAIL: php_pcov.dll not in $base"; find unzipped; exit 1; }
+            # The loadable module inside is versioned, e.g.
+            # php_pcov-v1.0.12-8.2-nts-vs16-x86_64.dll (not a bare php_pcov.dll);
+            # match the prefix. PHP loads it by path and reads the embedded module
+            # name ("pcov"), so our rename to pcov-<minor>-windows-x86_64.dll is fine.
+            dll="$(find unzipped -iname 'php_pcov*.dll' | head -1)"
+            [ -n "$dll" ] || { echo "FAIL: no php_pcov*.dll in $base"; find unzipped; exit 1; }
             cp "$dll" "dist/$name"
           else
             name="pcov-${{ matrix.php }}-${{ matrix.cell.label }}.so"
