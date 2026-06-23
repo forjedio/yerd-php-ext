@@ -7,3 +7,13 @@ rustflags = ["-C", "link-arg=-undefined", "-C", "link-arg=dynamic_lookup"]
 
 [target.aarch64-apple-darwin]
 rustflags = ["-C", "link-arg=-undefined", "-C", "link-arg=dynamic_lookup"]
+
+# Windows: ext-php-rs links the extension against the PHP dev pack's php8.lib (it
+# auto-downloads the matching pack from windows.php.net). Use LLVM's lld-link
+# rather than MSVC link.exe — ext-php-rs warns the MSVC linker version can
+# mismatch the VS toolset the target PHP was built with, whereas lld-link is a
+# drop-in MSVC-flavour linker that avoids the version coupling. The build env
+# prepends the LLVM bin dir (installed for bindgen/libclang) to PATH so the bare
+# name resolves; no -C linker-flavor is needed.
+[target.x86_64-pc-windows-msvc]
+linker = "lld-link.exe"
