@@ -49,7 +49,8 @@ not `-d zend_extension=<path>`. Yerd must wire `extension=`.
 
 The rest of the contract is unchanged: NDJSON loopback transport, the frame schema, the
 `yerd_dump.state_path` INI directive, `state.json`, and the
-`yerd-dump-<minor>-<os>-<arch>.so` artifact naming.
+`yerd-dump-<minor>-<os>-<arch>.{so,dll}` artifact naming (`.so` on Linux/macOS, `.dll` on
+Windows — loaded the same way, `extension=<path>`).
 
 ### New `http` category (needs the Yerd side too)
 
@@ -92,8 +93,9 @@ point at the app call that triggered them. `request` has no single call site (om
 
 ## Build & test (local, macOS/Linux)
 
-Requires Rust (stable), a PHP with dev headers + `php-config` on `PATH`, and `libclang`
-(for bindgen). On macOS the simplest source of headers is Homebrew (`brew install php`).
+Requires Rust (**stable** on macOS/Linux; Windows needs **nightly** — see below), a PHP with
+dev headers + `php-config` on `PATH`, and `libclang` (for bindgen). On macOS the simplest
+source of headers is Homebrew (`brew install php`).
 
 ```bash
 # Build
@@ -119,6 +121,27 @@ php -d extension=$PWD/target/debug/libyerd_dump.so \
     -d yerd_dump.state_path=/tmp/state.json \
     tests/integration/fixtures/telemetry.php
 ```
+
+### Build on Windows
+
+The Windows build (`yerd-dump-<minor>-windows-x86_64.dll`, NTS x64) differs from Unix:
+
+- **Nightly Rust** — `ext-php-rs` uses the unstable `abi_vectorcall` feature on Windows
+  (`#![cfg_attr(windows, feature(abi_vectorcall))]` in `src/lib.rs`):
+  `rustup toolchain install nightly`.
+- **LLVM** (for `libclang`/bindgen and the `lld-link` linker configured in
+  `.cargo/config.toml`) and **VS Build Tools** (`cl.exe`) on `PATH`.
+- A PHP from [windows.php.net](https://windows.php.net) on `PATH` — `ext-php-rs`
+  auto-downloads the matching dev pack (headers + `php8.lib`) from there.
+
+```powershell
+cargo +nightly build --release          # → target\release\yerd_dump.dll
+php -d extension=target\release\yerd_dump.dll -d display_startup_errors=1 `
+    -r "exit(extension_loaded('yerd-dump') ? 0 : 1);"
+```
+
+(The bash/`nc`-based frame smoke above is Linux/macOS-only; on Windows verify with the
+`extension_loaded` load check and an `ini_get('yerd_dump.state_path')` check.)
 
 ## Repository layout
 

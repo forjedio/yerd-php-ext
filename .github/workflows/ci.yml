@@ -86,10 +86,11 @@ jobs:
 
   # Independent of the Rust crate above: build the upstream pcov C extension from
   # its pinned source and assert it loads, so a pcov toolchain/version break is
-  # caught on PRs rather than only when cutting a pcov-v* release. Covers the
-  # floor (8.2) and ceiling (8.5), and BOTH toolchains (linux + the Homebrew-PHP
-  # macOS path, which needs the pcre2 header fix) — the full minor × cell matrix
-  # runs in release-pcov.yml. Mirrors that workflow's pin, build and smoke check.
+  # caught on PRs rather than only when cutting a release. Covers the floor (8.2)
+  # and ceiling (8.5) on the two Unix toolchains (linux + the Homebrew-PHP macOS
+  # path, which needs the pcre2 header fix); the Windows (nmake) path is covered
+  # by pcov-build-smoke-windows below. The full minor × cell matrix runs in
+  # release.yml. Mirrors that workflow's pin, build and smoke check.
   pcov-build-smoke:
     name: pcov build • smoke (${{ matrix.cell.label }}, PHP ${{ matrix.php }})
     runs-on: ${{ matrix.cell.os }}
@@ -123,7 +124,7 @@ jobs:
           set -euo pipefail
           # macOS: pcov pulls in PHP's php_pcre.h, which #includes "pcre2.h" —
           # a header that lives in the Homebrew pcre2 keg, not PHP's include dir.
-          # Point CPPFLAGS at it (same fix as release-pcov.yml). No-op on Linux.
+          # Point CPPFLAGS at it (same fix as release.yml). No-op on Linux.
           if [ "${{ matrix.cell.target_os }}" = "macos" ]; then
             brew install pcre2
             export CPPFLAGS="-I$(brew --prefix pcre2)/include${CPPFLAGS:+ $CPPFLAGS}"
@@ -140,3 +141,103 @@ jobs:
           php -d extension="$PWD/$so" -d display_startup_errors=1 -r \
             'exit(extension_loaded("pcov") && function_exists("pcov\\start") && function_exists("pcov\\collect") ? 0 : 1);'
           echo "ok: pcov ${{ matrix.php }} (${{ matrix.cell.label }}) built and loaded"
+
+  # Windows yerd-dump build + load smoke (one minor) so a Windows-specific compile
+  # break (nightly/abi_vectorcall, dev-pack download, lld-link) is caught on PRs,
+  # not only at release time. Mirrors release.yml's build job Windows leg; fmt/
+  # clippy/unit tests run on Linux above, so this is build + load only.
+  build-smoke-windows:
+    name: build • load smoke (windows x86_64, PHP 8.3)
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install PHP (NTS)
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.3"
+          extensions: opcache, pdo_sqlite
+          tools: none
+        env:
+          phpts: nts
+
+      - name: Set up LLVM/libclang + linker PATH
+        shell: bash
+        run: |
+          set -euo pipefail
+          # find_php discovers php.exe via PATH (setup-php), so don't set $PHP.
+          llvm="/c/Program Files/LLVM"
+          if [ ! -d "$llvm/bin" ]; then choco install llvm -y --no-progress; fi
+          test -f "$llvm/bin/lld-link.exe" || { echo "FAIL: lld-link.exe missing under $llvm/bin"; exit 1; }
+          echo "LIBCLANG_PATH=C:\\Program Files\\LLVM\\bin" >> "$GITHUB_ENV"
+          echo "C:\\Program Files\\LLVM\\bin" >> "$GITHUB_PATH"
+
+      - uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install Rust (nightly)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: php-8.3-windows-x86_64
+
+      - name: Build (debug)
+        run: cargo +nightly build
+
+      - name: Load smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          so="$PWD/target/debug/yerd_dump.dll"
+          php -d extension="$so" -d display_startup_errors=1 \
+            -r 'exit(extension_loaded("yerd-dump") ? 0 : 1);'
+          echo "ok: yerd-dump.dll built and loaded (windows-x86_64, PHP 8.3)"
+
+  # Windows pcov build (nmake, via php-windows-builder) + load smoke. 8.5/VS17 is
+  # the likeliest Windows compile break, so cover floor (8.2) + ceiling (8.5).
+  pcov-build-smoke-windows:
+    name: pcov build • smoke (windows x86_64, PHP ${{ matrix.php }})
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ["8.2", "8.5"]
+    env:
+      PCOV_VERSION: "1.0.12"
+    steps:
+      - name: Install PHP (NTS)
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          coverage: none
+          tools: none
+        env:
+          phpts: nts
+
+      - name: Build pcov (php-windows-builder / nmake)
+        # Tag has NO `v` prefix (it is `1.8.1`); see release.yml note.
+        uses: php/php-windows-builder/extension@1.8.1
+        with:
+          extension-url: https://github.com/krakjoe/pcov
+          extension-ref: v${{ env.PCOV_VERSION }}
+          php-version: ${{ matrix.php }}
+          arch: x64
+          ts: nts
+          run-tests: false
+
+      - name: Load + namespace smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          zips=(artifacts/*.zip)
+          [ "${#zips[@]}" -eq 1 ] || { echo "FAIL: expected 1 build zip, found ${#zips[@]}"; exit 1; }
+          mkdir -p unzipped
+          unzip -o "${zips[0]}" -d unzipped >/dev/null
+          dll="$(find unzipped -iname 'php_pcov.dll' | head -1)"
+          [ -n "$dll" ] || { echo "FAIL: php_pcov.dll not found"; find unzipped; exit 1; }
+          php -d extension="$PWD/$dll" -d display_startup_errors=1 -r \
+            'exit(extension_loaded("pcov") && function_exists("pcov\\start") && function_exists("pcov\\collect") ? 0 : 1);'
+          echo "ok: pcov ${{ matrix.php }} (windows-x86_64) built and loaded"

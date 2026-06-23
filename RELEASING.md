@@ -29,9 +29,20 @@ PHP minors: **8.2, 8.3, 8.4, 8.5**.
 | macOS arm64 | `macos-14` |
 | linux x86_64 | `ubuntu-22.04` |
 | linux aarch64 | `ubuntu-22.04-arm` |
+| windows x86_64 | `windows-2022` |
 
-`12` artifacts total (4 minors × 3 cells). Yerd is Apple-Silicon-only, so there is no
-Intel macOS cell. The publish job fails if any cell is missing.
+`16` artifacts total (4 minors × 4 cells). Yerd is Apple-Silicon-only, so there is no
+Intel macOS cell. **Windows is NTS x86_64 only** — there is no native arm64 cell (no public
+arm64-Windows runners and no arm64 PHP dev packs / winlibs; Windows-on-ARM runs the x64 PHP
+under emulation, into which the x64 `.dll` loads). The publish job fails if any cell is
+missing.
+
+> **Windows toolchain note.** Unlike Unix, the Windows `yerd-dump` cell needs **nightly Rust**
+> (`ext-php-rs` uses the unstable `abi_vectorcall` feature on Windows — see `src/lib.rs`),
+> LLVM (`libclang` for bindgen, `lld-link` as linker) and MSVC `cl.exe`. `ext-php-rs`
+> auto-downloads the matching PHP dev pack from `windows.php.net` keyed on the `setup-php`
+> `php.exe`, so the VS toolset aligns per minor automatically. The artifact is a `.dll`
+> (`yerd-dump-<minor>-windows-x86_64.dll`).
 
 ## `manifest.json` schema (source of truth — keep in sync with Yerd)
 
@@ -57,7 +68,17 @@ PHP of the same minor.
 The same-runner build-id is *not* self-compared (that is tautological — `ext-php-rs`
 derives ZTS/debug from the PHP it built against). For a stronger guarantee, set the repo/CI
 variable `EXPECTED_PHP_EXTENSION_BUILD` to the exact `PHP Extension Build` string that
-Yerd's static-php.dev PHP reports for that minor; the guard then asserts equality.
+Yerd's static-php.dev PHP reports for that minor; the guard then asserts equality. On
+Windows that string includes the **VS toolset** token (e.g. `VS16`/`VS17`), so this is also
+how you pin the toolset axis (see below).
+
+> **Windows adds a 4th ABI axis: the VS toolset.** A Windows extension must also match the
+> Visual Studio toolset the target PHP was built with (8.2/8.3 → `VS16`, 8.4/8.5 → `VS17`).
+> Because both our build and Yerd's PHP come from `windows.php.net` per minor, the toolset
+> aligns by construction. The Windows cells additionally assert this: the `yerd-dump` leg via
+> the build-id guard (and `EXPECTED_PHP_EXTENSION_BUILD` when set), and the `pcov` leg by
+> matching the built `.dll`'s `vsNN` (from the `php-windows-builder` zip name) against the
+> loader PHP's `PHP Extension Build`. The Unix legs do not and cannot assert a toolset.
 
 ## Known follow-ups (coordinate with Yerd)
 
@@ -76,8 +97,10 @@ Yerd's static-php.dev PHP reports for that minor; the guard then asserts equalit
 This repo *also* publishes the upstream [`krakjoe/pcov`](https://github.com/krakjoe/pcov)
 code-coverage driver, so Yerd can download and load it the same way it loads `yerd-dump`.
 **pcov is upstream C, not Rust** — the `build-pcov` job in `release.yml` builds it per
-(PHP minor × cell) with the standard PHP extension toolchain (`phpize && ./configure
---enable-pcov && make`); no Rust, bindgen, or libclang.
+(PHP minor × cell); no Rust, bindgen, or libclang. On the **Unix** cells it uses the
+standard PHP extension toolchain (`phpize && ./configure --enable-pcov && make`); on the
+**Windows** cell it builds from source via the [`php/php-windows-builder`](https://github.com/php/php-windows-builder)
+action (`config.w32` + `nmake`), producing a `.dll`.
 
 pcov is built and attached to the **same `v*` release** as `yerd-dump` (not a separate
 `pcov-v*` tag). This is deliberate:
@@ -99,7 +122,10 @@ manifest; its files are never listed in `yerd-dump`'s `manifest.json`:
 | Build job | `build` (Rust) | `build-pcov` (upstream C) |
 | Manifest | `manifest.json` | `pcov-manifest.json` |
 | Checksums | `SHA256SUMS` | `SHA256SUMS-pcov` |
-| Artifact name | `yerd-dump-<minor>-<os>-<arch>.so` | `pcov-<minor>-<os>-<arch>.so` |
+| Artifact name | `yerd-dump-<minor>-<os>-<arch>.{so,dll}` | `pcov-<minor>-<os>-<arch>.{so,dll}` |
+
+(`.so` on Linux/macOS, `.dll` on Windows. The consumer matches on `(php, os, arch)` and
+takes the filename from the manifest, so the extension suffix is immaterial to matching.)
 
 Both manifests share the **identical schema** (`version` / `php_minors` /
 `files[{name,php,os,arch,sha256,size}]`) and are attached to the same release. Yerd's
@@ -122,9 +148,17 @@ not the pcov upstream version — yerd matches on file `php`/`os`/`arch`, not `v
 > `CPPFLAGS` (PHP's `php_pcre.h` `#include "pcre2.h"`); the job installs `pcre2` and sets the
 > flag. Linux ships those headers inline.
 
+> **Windows build note.** The Windows cell builds pcov from the same pinned `v1.0.12` tag via
+> `php/php-windows-builder/extension` (pinned action version) with `run-tests: false` (we
+> gate via our own load + namespace smoke, not pcov's upstream `.phpt` suite). The action
+> emits a build zip in `artifacts/`; the staging step asserts it is `-nts-`/`-x64`, extracts
+> `php_pcov.dll`, and renames it to `pcov-<minor>-windows-x86_64.dll`. `windows.php.net`
+> ships prebuilt `1.0.12` DLLs for 8.2–8.5 (incl. 8.5/VS17), so the from-source build is
+> expected to succeed across all minors.
+
 ### Cutting a release (both extensions)
 
 Nothing changes from the `yerd-dump` flow above — a single `v*` tag now produces both. The
-release contains, in addition to the `yerd-dump` assets: `pcov-<minor>-<os>-<arch>.so` for
-every cell, `SHA256SUMS-pcov`, and `pcov-manifest.json`. `12` pcov artifacts (4 × 3); the
+release contains, in addition to the `yerd-dump` assets: `pcov-<minor>-<os>-<arch>.{so,dll}`
+for every cell, `SHA256SUMS-pcov`, and `pcov-manifest.json`. `16` pcov artifacts (4 × 4); the
 publish job fails if any cell is missing.

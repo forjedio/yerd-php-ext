@@ -39,10 +39,14 @@ jobs:
         php: ["8.2", "8.3", "8.4", "8.5"]
         cell:
           # Yerd supports Apple Silicon only (no Intel macOS), so there is no
-          # macos-x86_64 cell.
-          - { os: macos-14,         label: macos-aarch64, target_os: macos, arch: aarch64 }
-          - { os: ubuntu-22.04,     label: linux-x86_64,  target_os: linux, arch: x86_64 }
-          - { os: ubuntu-22.04-arm, label: linux-aarch64, target_os: linux, arch: aarch64 }
+          # macos-x86_64 cell. `toolchain` is per-cell: Windows needs nightly for
+          # ext-php-rs's `abi_vectorcall` feature (src/lib.rs), the rest stay stable.
+          # Windows is NTS x86_64 only — native arm64 has no GitHub runners / no
+          # arm64 PHP dev packs (x64-under-emulation covers ARM hosts).
+          - { os: macos-14,         label: macos-aarch64, target_os: macos,   arch: aarch64, toolchain: stable }
+          - { os: ubuntu-22.04,     label: linux-x86_64,  target_os: linux,   arch: x86_64,  toolchain: stable }
+          - { os: ubuntu-22.04-arm, label: linux-aarch64, target_os: linux,   arch: aarch64, toolchain: stable }
+          - { os: windows-2022,     label: windows-x86_64, target_os: windows, arch: x86_64, toolchain: nightly }
     steps:
       - uses: actions/checkout@v4
 
@@ -52,8 +56,38 @@ jobs:
           php-version: ${{ matrix.php }}
           extensions: opcache, pdo_sqlite
           tools: none
+        # setup-php installs NTS by default on Windows; pin it explicitly. The
+        # build-id guard below is the actual enforcement. (No-op env on Unix.)
+        env:
+          phpts: nts
+
+      - name: Set up LLVM/libclang + linker PATH (Windows)
+        if: matrix.cell.target_os == 'windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # ext-php-rs reads the php.exe setup-php put on PATH (version + thread
+          # safety) to auto-download the matching dev pack from windows.php.net,
+          # then links php8.lib from it — find_php discovers php.exe via PATH, so we
+          # don't set $PHP (a Git Bash /c/... path could confuse the native build).
+          # bindgen needs libclang (windows-2022 ships LLVM); lld-link (also from
+          # LLVM) is the configured linker (.cargo/config.toml) — prepend its bin
+          # dir to PATH so both libclang.dll and lld-link.exe resolve.
+          llvm="/c/Program Files/LLVM"
+          if [ ! -d "$llvm/bin" ]; then
+            echo "LLVM not found at $llvm; installing via choco"
+            choco install llvm -y --no-progress
+          fi
+          test -f "$llvm/bin/lld-link.exe" || { echo "FAIL: lld-link.exe missing under $llvm/bin"; exit 1; }
+          echo "LIBCLANG_PATH=C:\\Program Files\\LLVM\\bin" >> "$GITHUB_ENV"
+          echo "C:\\Program Files\\LLVM\\bin" >> "$GITHUB_PATH"
+
+      - name: Set up MSVC dev environment (Windows)
+        if: matrix.cell.target_os == 'windows'
+        uses: ilammy/msvc-dev-cmd@v1
 
       - name: Install libclang (bindgen)
+        if: matrix.cell.target_os != 'windows'
         run: |
           if [ "${{ matrix.cell.target_os }}" = "linux" ]; then
             # clang/libclang >= 15: ubuntu-22.04's default llvm-14 emmintrin.h
@@ -78,8 +112,10 @@ jobs:
             "$prefix/bin/clang" --version | head -1
           fi
 
-      - name: Install Rust (stable)
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust (${{ matrix.cell.toolchain }})
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.cell.toolchain }}
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -94,18 +130,23 @@ jobs:
         run: echo "MACOSX_DEPLOYMENT_TARGET=11.0" >> "$GITHUB_ENV"
 
       - name: Build (release)
-        run: cargo build --release
+        # `+${toolchain}` pins per-cell: nightly on Windows (abi_vectorcall),
+        # stable elsewhere. dtolnay/rust-toolchain@master installed it above.
+        run: cargo +${{ matrix.cell.toolchain }} build --release
 
       - name: Stage artifact
         id: stage
         shell: bash
         run: |
-          name="yerd-dump-${{ matrix.php }}-${{ matrix.cell.label }}.so"
-          if [ "${{ matrix.cell.target_os }}" = "macos" ]; then
-            src="target/release/libyerd_dump.dylib"
+          if [ "${{ matrix.cell.target_os }}" = "windows" ]; then
+            # cdylib on Windows → yerd_dump.dll (no `lib` prefix). Distribute .dll.
+            ext="dll"; src="target/release/yerd_dump.dll"
+          elif [ "${{ matrix.cell.target_os }}" = "macos" ]; then
+            ext="so"; src="target/release/libyerd_dump.dylib"
           else
-            src="target/release/libyerd_dump.so"
+            ext="so"; src="target/release/libyerd_dump.so"
           fi
+          name="yerd-dump-${{ matrix.php }}-${{ matrix.cell.label }}.${ext}"
           mkdir -p dist
           cp "$src" "dist/$name"
           echo "name=$name" >> "$GITHUB_OUTPUT"
@@ -147,11 +188,35 @@ jobs:
           done
           echo "FAIL: extension did not load after retries"; cat /tmp/load.err || true; exit 1
 
-      - name: Integration smoke
+      - name: Integration smoke (frame streaming, Unix only)
+        # The full smoke needs python3 + bash /dev/tcp, which are unreliable under
+        # Git Bash on the Windows runner; Windows is gated by the load+INI smoke
+        # below (the contract that matters). See plan: full Windows frame smoke is
+        # a deferred follow-up.
+        if: matrix.cell.target_os != 'windows'
         shell: bash
         run: |
           EXT_SO="$PWD/${{ steps.stage.outputs.path }}" PHP="$(which php)" PORT=2304 \
             bash tests/integration/smoke.sh
+
+      - name: Load + INI smoke (Windows)
+        if: matrix.cell.target_os == 'windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Use a NATIVE Windows temp path ($RUNNER_TEMP), not mktemp's MSYS
+          # /tmp/... which native php.exe can't resolve. Assert the .dll loads and
+          # the PHP_INI_SYSTEM directive is registered + visible via -d (the same
+          # contract smoke.sh step [2/4] checks on Unix).
+          so="$PWD/${{ steps.stage.outputs.path }}"
+          state="$RUNNER_TEMP/yerd-state.json"
+          echo '{"enabled":false,"port":2304,"features":{}}' > "$state"
+          php -d extension="$so" -d display_startup_errors=1 \
+            -r 'exit(extension_loaded("yerd-dump") ? 0 : 1);'
+          got="$(php -d extension="$so" -d yerd_dump.state_path="$state" \
+            -r 'echo ini_get("yerd_dump.state_path");')"
+          [ "$got" = "$state" ] || { echo "FAIL: state_path not visible (got '$got')"; exit 1; }
+          echo "ok: yerd-dump.dll loaded + INI directive visible"
 
       # NOTE: build-provenance attestation is done ONCE in the publish job over all
       # artifacts (1 Rekor call instead of 12), so a transient Sigstore outage can't
@@ -181,9 +246,12 @@ jobs:
       matrix:
         php: ["8.2", "8.3", "8.4", "8.5"]
         cell:
-          - { os: macos-14,         label: macos-aarch64, target_os: macos, arch: aarch64 }
-          - { os: ubuntu-22.04,     label: linux-x86_64,  target_os: linux, arch: x86_64 }
-          - { os: ubuntu-22.04-arm, label: linux-aarch64, target_os: linux, arch: aarch64 }
+          - { os: macos-14,         label: macos-aarch64,  target_os: macos,   arch: aarch64 }
+          - { os: ubuntu-22.04,     label: linux-x86_64,   target_os: linux,   arch: x86_64 }
+          - { os: ubuntu-22.04-arm, label: linux-aarch64,  target_os: linux,   arch: aarch64 }
+          # Windows NTS x86_64: built from source via php/php-windows-builder
+          # (nmake), not phpize/make. NTS-only (consumer can't express TS/toolset).
+          - { os: windows-2022,     label: windows-x86_64, target_os: windows, arch: x86_64 }
     steps:
       - name: Install PHP (NTS, non-debug, with dev headers + phpize)
         uses: shivammathur/setup-php@v2
@@ -193,12 +261,18 @@ jobs:
           # setup-php pulling in a pcov/xdebug of its own.
           coverage: none
           tools: none
+        # NTS by default on Windows; pin it. This php.exe is the loader for the
+        # smoke + build-property guard (the php-windows-builder action provisions
+        # its OWN PHP/SDK internally for the actual compile). No-op env on Unix.
+        env:
+          phpts: nts
 
       - name: Set deployment target (macOS portability)
         if: matrix.cell.target_os == 'macos'
         run: echo "MACOSX_DEPLOYMENT_TARGET=11.0" >> "$GITHUB_ENV"
 
       - name: Fetch pinned pcov source
+        if: matrix.cell.target_os != 'windows'
         shell: bash
         run: |
           set -euo pipefail
@@ -210,6 +284,7 @@ jobs:
           test -f pcov-src/pcov.c || { echo "FAIL: pcov.c not found in source tarball"; exit 1; }
 
       - name: Build pcov (phpize && configure && make)
+        if: matrix.cell.target_os != 'windows'
         shell: bash
         run: |
           set -euo pipefail
@@ -228,23 +303,63 @@ jobs:
           ./configure --enable-pcov
           make -j"$(getconf _NPROCESSORS_ONLN)"
 
+      - name: Build pcov (Windows, php-windows-builder / nmake)
+        if: matrix.cell.target_os == 'windows'
+        # Pinned action (not a moving @v1) so the 8.5/VS17 support is reproducible.
+        # NB: the tag has NO `v` prefix (it is `1.8.1`, unlike krakjoe/pcov's
+        # `v1.0.12`). It self-checks-out + fetches krakjoe/pcov, provisions its own
+        # PHP-SDK, runs config.w32 + nmake, and writes the build to artifacts/*.zip
+        # on disk (which the Stage step below consumes). run-tests:false — we gate
+        # via our own load+namespace smoke, not pcov's upstream .phpt suite.
+        uses: php/php-windows-builder/extension@1.8.1
+        with:
+          extension-url: https://github.com/krakjoe/pcov
+          extension-ref: v${{ env.PCOV_VERSION }}
+          php-version: ${{ matrix.php }}
+          arch: x64
+          ts: nts
+          run-tests: false
+
       - name: Stage artifact
         id: stage
         shell: bash
         run: |
           set -euo pipefail
-          name="pcov-${{ matrix.php }}-${{ matrix.cell.label }}.so"
-          # phpize/libtool puts the loadable module at modules/pcov.so; on some
-          # configs the real object is .libs/pcov.so behind a libtool wrapper.
-          if [ -f pcov-src/modules/pcov.so ]; then
-            src="pcov-src/modules/pcov.so"
-          elif [ -f pcov-src/.libs/pcov.so ]; then
-            src="pcov-src/.libs/pcov.so"
+          if [ "${{ matrix.cell.target_os }}" = "windows" ]; then
+            name="pcov-${{ matrix.php }}-windows-x86_64.dll"
+            # php-windows-builder leaves the build zip in ./artifacts. Assert
+            # exactly one, and that the build's OWN self-reported name is NTS + x64
+            # (reject -ts-/-x86 — the consumer can't express either). Capture the
+            # vsNN toolset token for the guard step.
+            shopt -s nullglob
+            zips=(artifacts/*.zip)
+            [ "${#zips[@]}" -eq 1 ] || { echo "FAIL: expected 1 build zip, found ${#zips[@]}"; printf '%s\n' "${zips[@]:-<none>}"; exit 1; }
+            zip="${zips[0]}"; base="$(basename "$zip")"
+            echo "build zip: $base"
+            case "$base" in *-nts-*) ;; *) echo "FAIL: build is not NTS: $base"; exit 1;; esac
+            case "$base" in *-x64.zip) ;; *) echo "FAIL: build is not x64: $base"; exit 1;; esac
+            vs="$(echo "$base" | grep -oE 'vs[0-9]+' | head -1)"
+            [ -n "$vs" ] || { echo "FAIL: could not parse vsNN toolset from $base"; exit 1; }
+            echo "vs=$vs" >> "$GITHUB_OUTPUT"
+            mkdir -p dist unzipped
+            unzip -o "$zip" -d unzipped >/dev/null
+            dll="$(find unzipped -iname 'php_pcov.dll' | head -1)"
+            [ -n "$dll" ] || { echo "FAIL: php_pcov.dll not in $base"; find unzipped; exit 1; }
+            cp "$dll" "dist/$name"
           else
-            echo "FAIL: built pcov.so not found"; find pcov-src -name 'pcov*.so' -o -name 'pcov*.dylib'; exit 1
+            name="pcov-${{ matrix.php }}-${{ matrix.cell.label }}.so"
+            # phpize/libtool puts the loadable module at modules/pcov.so; on some
+            # configs the real object is .libs/pcov.so behind a libtool wrapper.
+            if [ -f pcov-src/modules/pcov.so ]; then
+              src="pcov-src/modules/pcov.so"
+            elif [ -f pcov-src/.libs/pcov.so ]; then
+              src="pcov-src/.libs/pcov.so"
+            else
+              echo "FAIL: built pcov.so not found"; find pcov-src -name 'pcov*.so' -o -name 'pcov*.dylib'; exit 1
+            fi
+            mkdir -p dist
+            cp "$src" "dist/$name"
           fi
-          mkdir -p dist
-          cp "$src" "dist/$name"
           file "dist/$name" || true
           echo "name=$name" >> "$GITHUB_OUTPUT"
           echo "path=dist/$name" >> "$GITHUB_OUTPUT"
@@ -259,6 +374,16 @@ jobs:
           echo "$info" | grep -E "Debug Build => no" \
             || { echo "FAIL: PHP is a debug build"; exit 1; }
           echo "PHP API:"; echo "$info" | grep -E "PHP API|Zend Extension Build|PHP Extension Build" || true
+          # Windows: the consumer can't express the VS toolset axis, so assert the
+          # built dll's toolset (vsNN, from the build zip name) matches the loader
+          # PHP's "PHP Extension Build" string. Both come from windows.php.net per
+          # minor, so they should agree (8.2/8.3→vs16, 8.4/8.5→vs17).
+          if [ "${{ matrix.cell.target_os }}" = "windows" ]; then
+            vs="${{ steps.stage.outputs.vs }}"
+            echo "$info" | grep -iE "PHP Extension Build.*${vs}" \
+              || { echo "FAIL: built toolset $vs != loader PHP Extension Build"; echo "$info" | grep -i 'PHP Extension Build'; exit 1; }
+            echo "ok: toolset $vs matches loader PHP"
+          fi
 
       - name: Load + namespace smoke
         shell: bash
@@ -303,18 +428,23 @@ jobs:
         run: |
           set -euo pipefail
           cd staging
+          # Unmatched globs expand to nothing (not a literal pattern that would
+          # crash the for-loops / sha256sum under `set -euo pipefail`). Artifacts
+          # are a mix of .so (Unix) and .dll (Windows).
+          shopt -s nullglob
           ls -la
           # The download contract Yerd verifies. Prefer the dispatch input tag
           # (on workflow_dispatch GITHUB_REF_NAME is the branch, not the tag).
           version="${{ github.event.inputs.tag || github.ref_name }}"
           minors="8.2 8.3 8.4 8.5"
-          cells=3
-          count=$(ls yerd-dump-*.so | wc -l | tr -d ' ')
+          cells=4   # macos-aarch64, linux-x86_64, linux-aarch64, windows-x86_64
+          yd_files=(yerd-dump-*.so yerd-dump-*.dll)
+          count=${#yd_files[@]}
           expected=$(( $(echo $minors | wc -w) * cells ))
           if [ "$count" -ne "$expected" ]; then
             echo "FAIL: expected $expected artifacts, found $count (a cell was dropped)"; exit 1
           fi
-          sha256sum yerd-dump-*.so > SHA256SUMS
+          sha256sum "${yd_files[@]}" > SHA256SUMS
           # Derive the php_minors JSON array from $minors so it can't drift.
           php_minors_json=$(echo "$minors" | tr ' ' '\n' | sed 's/.*/"&"/' | paste -sd, -)
           {
@@ -323,9 +453,9 @@ jobs:
             echo "  \"php_minors\": [$php_minors_json],"
             echo "  \"files\": ["
             first=1
-            for f in yerd-dump-*.so; do
-              # name pattern: yerd-dump-<minor>-<os>-<arch>.so
-              base="${f%.so}"; rest="${base#yerd-dump-}"
+            for f in "${yd_files[@]}"; do
+              # name pattern: yerd-dump-<minor>-<os>-<arch>.{so,dll}
+              base="${f%.*}"; rest="${base#yerd-dump-}"
               php="${rest%%-*}"; osarch="${rest#*-}"
               os="${osarch%%-*}"; arch="${osarch#*-}"
               sha=$(sha256sum "$f" | cut -d' ' -f1)
@@ -347,20 +477,24 @@ jobs:
           # schema, NEVER merged into manifest.json above. yerd's yerd-dump
           # matcher only reads manifest.json, so it can't see pcov; yerd's pcov
           # downloader reads pcov-manifest.json from this same release. ---
-          pcount=$(ls pcov-*.so | wc -l | tr -d ' ')
+          # Suffix+prefix-explicit: pcov-*.{so,dll} ignores the php-windows-builder
+          # action's own stray php_pcov-*.zip (different prefix), SHA256SUMS-pcov,
+          # and pcov-manifest.json.
+          pcov_files=(pcov-*.so pcov-*.dll)
+          pcount=${#pcov_files[@]}
           if [ "$pcount" -ne "$expected" ]; then
             echo "FAIL: expected $expected pcov artifacts, found $pcount (a cell was dropped)"; exit 1
           fi
-          sha256sum pcov-*.so > SHA256SUMS-pcov
+          sha256sum "${pcov_files[@]}" > SHA256SUMS-pcov
           {
             echo "{"
             echo "  \"version\": \"$version\","
             echo "  \"php_minors\": [$php_minors_json],"
             echo "  \"files\": ["
             first=1
-            for f in pcov-*.so; do
-              # name pattern: pcov-<minor>-<os>-<arch>.so
-              base="${f%.so}"; rest="${base#pcov-}"
+            for f in "${pcov_files[@]}"; do
+              # name pattern: pcov-<minor>-<os>-<arch>.{so,dll}
+              base="${f%.*}"; rest="${base#pcov-}"
               php="${rest%%-*}"; osarch="${rest#*-}"
               os="${osarch%%-*}"; arch="${osarch#*-}"
               sha=$(sha256sum "$f" | cut -d' ' -f1)
@@ -377,17 +511,19 @@ jobs:
           cat pcov-manifest.json
           python3 -c "import json,sys; json.load(open('pcov-manifest.json'))"
 
-      # Single provenance attestation over all artifacts (1 Rekor call, not 12).
+      # Single provenance attestation over all artifacts (1 Rekor call, not 32).
       # Non-blocking: a transient Sigstore/Rekor outage must not sink a release —
-      # the .so artifacts + SHA256SUMS (integrity) still publish; provenance is
-      # defense-in-depth. Re-run the release if you need the attestation.
+      # the .so/.dll artifacts + SHA256SUMS (integrity) still publish; provenance
+      # is defense-in-depth. Re-run the release if you need the attestation.
       - name: Attest build provenance
         uses: actions/attest-build-provenance@v2
         continue-on-error: true
         with:
           subject-path: |
             staging/yerd-dump-*.so
+            staging/yerd-dump-*.dll
             staging/pcov-*.so
+            staging/pcov-*.dll
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -395,9 +531,11 @@ jobs:
           tag_name: ${{ github.event.inputs.tag || github.ref_name }}
           files: |
             staging/yerd-dump-*.so
+            staging/yerd-dump-*.dll
             staging/SHA256SUMS
             staging/manifest.json
             staging/pcov-*.so
+            staging/pcov-*.dll
             staging/SHA256SUMS-pcov
             staging/pcov-manifest.json
           fail_on_unmatched_files: true
