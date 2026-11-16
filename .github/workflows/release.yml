@@ -40,7 +40,7 @@ jobs:
         cell:
           # Yerd supports Apple Silicon only (no Intel macOS), so there is no
           # macos-x86_64 cell.
-          - { os: macos-14,         label: macos-aarch64, target_os: macos, arch: aarch64 }
+          - { os: macos-latest,     label: macos-aarch64, target_os: macos, arch: aarch64 }
           - { os: ubuntu-22.04,     label: linux-x86_64,  target_os: linux, arch: x86_64 }
           - { os: ubuntu-22.04-arm, label: linux-aarch64, target_os: linux, arch: aarch64 }
     steps:
@@ -181,7 +181,7 @@ jobs:
       matrix:
         php: ["8.2", "8.3", "8.4", "8.5"]
         cell:
-          - { os: macos-14,         label: macos-aarch64, target_os: macos, arch: aarch64 }
+          - { os: macos-latest,     label: macos-aarch64, target_os: macos, arch: aarch64 }
           - { os: ubuntu-22.04,     label: linux-x86_64,  target_os: linux, arch: x86_64 }
           - { os: ubuntu-22.04-arm, label: linux-aarch64, target_os: linux, arch: aarch64 }
     steps:
