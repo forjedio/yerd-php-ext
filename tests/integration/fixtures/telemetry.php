@@ -40,7 +40,19 @@ namespace Illuminate\Log\Events {
     {
         public $level = 'warning';
         public $message = 'disk almost full';
-        public $context = ['free' => '5%'];
+        public $context;
+
+        // Mixed-type context (issue #3): a property default can't hold an object.
+        public function __construct()
+        {
+            $this->context = [
+                'free' => '5%',               // string: must be unchanged
+                'channel' => ['slack', 'stack'], // array
+                'test' => 1,                  // int
+                'user' => new \stdClass(),    // object
+                'flag' => null,
+            ];
+        }
     }
 }
 

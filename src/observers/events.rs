@@ -19,9 +19,12 @@ use std::collections::HashMap;
 use serde_json::Value;
 
 use crate::frame::{truncate, FIELD_CAP};
+use crate::render::render;
 use crate::request::{self, Feature};
 use crate::zend_util::{arg, caller_location};
-use ext_php_rs::types::ZendObject;
+use ext_php_rs::convert::FromZval;
+use ext_php_rs::flags::DataType;
+use ext_php_rs::types::{ZendObject, Zval};
 use ext_php_rs::zend::ExecuteData;
 
 /// Handle a `Dispatcher::dispatch($event, ...)` call.
@@ -109,15 +112,16 @@ fn emit_log(obj: &ZendObject, file: Option<String>, line: u32) {
         .unwrap_or_default();
     // Read context as an OWNED map: `get_property::<&Zval>` would borrow a value
     // that may point into a temporary the engine drops (use-after-free). An owned
-    // `HashMap<String, String>` copies the values out before that temporary dies.
-    // Non-string-coercible contexts simply yield an empty map (best-effort).
+    // `HashMap<String, ContextValue>` copies the values out before that temporary
+    // dies. Values convert per entry via `ContextValue` (strings verbatim, others
+    // rendered), so one non-string value no longer drops the whole context.
     let context = obj
-        .get_property::<HashMap<String, String>>("context")
+        .get_property::<HashMap<String, ContextValue>>("context")
         .ok()
         .map(|map| {
             let mut out = serde_json::Map::new();
             for (k, v) in map.into_iter().take(64) {
-                out.insert(k, Value::from(truncate(&v, 4096)));
+                out.insert(k, Value::from(truncate(&v.0, 4096)));
             }
             Value::Object(out)
         })
@@ -127,6 +131,20 @@ fn emit_log(obj: &ZendObject, file: Option<String>, line: u32) {
         "log",
         move || serde_json::json!({ "level": level, "message": message, "context": context, "file": file, "line": line }),
     );
+}
+
+/// A log-context value copied out as an owned string. Infallible, so one
+/// non-string entry can't abort the whole map conversion (ext-php-rs's
+/// `HashMap` `TryFrom` `?`s each entry). Strings pass through verbatim;
+/// anything else gets the bounded `dump` text rendering.
+struct ContextValue(String);
+
+impl FromZval<'_> for ContextValue {
+    const TYPE: DataType = DataType::Mixed;
+
+    fn from_zval(zval: &Zval) -> Option<Self> {
+        Some(Self(zval.string().unwrap_or_else(|| render(zval).1)))
+    }
 }
 
 /// Best-effort job display name: the `Job::resolveName()`-style info isn't

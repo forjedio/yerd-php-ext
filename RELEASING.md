@@ -26,7 +26,7 @@ PHP minors: **8.2, 8.3, 8.4, 8.5**.
 
 | cell | runner |
 |------|--------|
-| macOS arm64 | `macos-14` |
+| macOS arm64 | `macos-latest` |
 | linux x86_64 | `ubuntu-22.04` |
 | linux aarch64 | `ubuntu-22.04-arm` |
 | windows x86_64 | `windows-2022` |

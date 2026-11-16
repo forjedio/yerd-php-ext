@@ -43,7 +43,7 @@ jobs:
           # ext-php-rs's `abi_vectorcall` feature (src/lib.rs), the rest stay stable.
           # Windows is NTS x86_64 only — native arm64 has no GitHub runners / no
           # arm64 PHP dev packs (x64-under-emulation covers ARM hosts).
-          - { os: macos-14,         label: macos-aarch64, target_os: macos,   arch: aarch64, toolchain: stable }
+          - { os: macos-latest,     label: macos-aarch64, target_os: macos,   arch: aarch64, toolchain: stable }
           - { os: ubuntu-22.04,     label: linux-x86_64,  target_os: linux,   arch: x86_64,  toolchain: stable }
           - { os: ubuntu-22.04-arm, label: linux-aarch64, target_os: linux,   arch: aarch64, toolchain: stable }
           - { os: windows-2022,     label: windows-x86_64, target_os: windows, arch: x86_64, toolchain: nightly }
@@ -250,7 +250,7 @@ jobs:
       matrix:
         php: ["8.2", "8.3", "8.4", "8.5"]
         cell:
-          - { os: macos-14,         label: macos-aarch64,  target_os: macos,   arch: aarch64 }
+          - { os: macos-latest,     label: macos-aarch64,  target_os: macos,   arch: aarch64 }
           - { os: ubuntu-22.04,     label: linux-x86_64,   target_os: linux,   arch: x86_64 }
           - { os: ubuntu-22.04-arm, label: linux-aarch64,  target_os: linux,   arch: aarch64 }
           # Windows NTS x86_64: built from source via php/php-windows-builder

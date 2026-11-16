@@ -103,7 +103,7 @@ jobs:
         php: ["8.2", "8.5"]
         cell:
           - { os: ubuntu-22.04, label: linux-x86_64, target_os: linux }
-          - { os: macos-14,     label: macos-aarch64, target_os: macos }
+          - { os: macos-latest, label: macos-aarch64, target_os: macos }
     env:
       PCOV_VERSION: "1.0.12"
     steps:
