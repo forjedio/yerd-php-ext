@@ -86,12 +86,15 @@ unset YERD_TEST_HTTP_URL
 python3 - "$FRAMES" <<'PY' || exit 1
 import json, sys
 cats = {}
+log_payload = None
 for line in open(sys.argv[1]):
     line = line.strip()
     if not line:
         continue
     d = json.loads(line)
     cats[d["category"]] = cats.get(d["category"], 0) + 1
+    if d["category"] == "log":
+        log_payload = d["payload"]
     # Contract: every frame has the required envelope keys.
     for k in ("category", "ts", "site", "request_id", "payload"):
         assert k in d, f"frame missing key {k}: {d}"
@@ -102,6 +105,20 @@ if missing:
     print("SMOKE FAIL: missing categories:", missing, file=sys.stderr)
     sys.exit(1)
 # Spot-check a couple of payloads.
+# Log context survives mixed-type values (issue #3); values stay strings.
+ctx = (log_payload or {}).get("context", {})
+ok = (
+    set(ctx) == {"free", "channel", "test", "user", "flag"}
+    and all(isinstance(v, str) for v in ctx.values())
+    and ctx["free"] == "5%"
+    and ctx["test"] == "1"
+    and "slack" in ctx["channel"]
+    and ctx["user"].startswith("stdClass")
+    and ctx["flag"] == "null"
+)
+if not ok:
+    print("SMOKE FAIL: log context", log_payload, file=sys.stderr)
+    sys.exit(1)
 PY
 
 echo "==> [4/4] negative paths degrade silently (no sink running)"
