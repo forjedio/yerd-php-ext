@@ -25,6 +25,16 @@ its artifacts are listed in a **separate `pcov-manifest.json`** (with `SHA256SUM
 never merged into `yerd-dump`'s `manifest.json`, so the consumer's `(php, os, arch)` match
 can't confuse the two. See [`RELEASING.md`](RELEASING.md#pcov-rides-the-same-v-release).
 
+## Also published here: `xdebug`
+
+Each `v*` release also carries upstream [Xdebug](https://xdebug.org/) (pinned to `3.5.3`,
+PHP 8.2–8.5), built by the `build-xdebug` job in `release.yml`, so Yerd can download it and
+load it with `-d zend_extension=<path>`. Like pcov it rides the same release but is listed in
+its **own `xdebug-manifest.json`** (with `SHA256SUMS-xdebug`), never merged into the others.
+Xdebug is licensed under the Xdebug License, not MIT; the release attaches it as
+`LICENSE-xdebug`. This product includes Xdebug software, freely available from
+<https://xdebug.org/>. See [`RELEASING.md`](RELEASING.md#xdebug-rides-the-same-v-release).
+
 ## How it works
 
 The extension registers a single `zend_observer` fcall observer (modern, cached per

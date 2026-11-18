@@ -109,9 +109,10 @@ pcov is built and attached to the **same `v*` release** as `yerd-dump` (not a se
   separate pcov release would become the repo's **"latest"** and that URL would 404
   (a pcov release has no `manifest.json`). One release stream keeps "latest" correct.
 - The `build-pcov` job is **required** — `publish` needs it, so if pcov fails to build the
-  entire release is blocked (all-or-nothing; every release carries both extensions).
+  entire release is blocked (all-or-nothing; every release carries all three extensions —
+  see [`xdebug`](#xdebug-rides-the-same-v-release)).
 
-### Two manifests, never merged
+### Separate manifests, never merged
 
 The Yerd consumer (`bin/yerdd/src/ext_install.rs`) matches manifest entries on
 `(php, os, arch)` **only — there is no extension-name field.** So pcov gets its **own**
@@ -126,6 +127,8 @@ manifest; its files are never listed in `yerd-dump`'s `manifest.json`:
 
 (`.so` on Linux/macOS, `.dll` on Windows. The consumer matches on `(php, os, arch)` and
 takes the filename from the manifest, so the extension suffix is immaterial to matching.)
+Xdebug adds a third, equally separate manifest — see the three-manifest table in the
+[`xdebug`](#xdebug-rides-the-same-v-release) section.
 
 Both manifests share the **identical schema** (`version` / `php_minors` /
 `files[{name,php,os,arch,sha256,size}]`) and are attached to the same release. Yerd's
@@ -157,9 +160,69 @@ not the pcov upstream version — yerd matches on file `php`/`os`/`arch`, not `v
 > ships prebuilt `1.0.12` DLLs for 8.2–8.5 (incl. 8.5/VS17), so the from-source build is
 > expected to succeed across all minors.
 
-### Cutting a release (both extensions)
+### Cutting a release (all three extensions)
 
-Nothing changes from the `yerd-dump` flow above — a single `v*` tag now produces both. The
-release contains, in addition to the `yerd-dump` assets: `pcov-<minor>-<os>-<arch>.{so,dll}`
-for every cell, `SHA256SUMS-pcov`, and `pcov-manifest.json`. `16` pcov artifacts (4 × 4); the
-publish job fails if any cell is missing.
+Nothing changes from the `yerd-dump` flow above — a single `v*` tag now produces all three
+(see [`xdebug`](#xdebug-rides-the-same-v-release) below). The release contains, in addition to
+the `yerd-dump` assets: `pcov-<minor>-<os>-<arch>.{so,dll}` and
+`xdebug-<minor>-<os>-<arch>.{so,dll}` for every cell, `SHA256SUMS-pcov`, `pcov-manifest.json`,
+`SHA256SUMS-xdebug`, `xdebug-manifest.json`, and the upstream licences `LICENSE-pcov` and
+`LICENSE-xdebug`. That is **48 artifacts** (3 × 16: 4 minors × 4 cells per extension); the
+publish job fails if any cell of any extension is missing.
+
+---
+
+# `xdebug` (rides the same `v*` release)
+
+This repo *also* publishes upstream [Xdebug](https://github.com/xdebug/xdebug), so Yerd can
+download it and load it into PHP-FPM (and its `phpdebug` CLI shim) with
+**`-d zend_extension=<path>`** — never `extension=`. Like pcov, **Xdebug is upstream C, not
+Rust**: the `build-xdebug` job in `release.yml` builds it per (PHP minor × cell) with
+`phpize && ./configure --enable-xdebug --without-xdebug-compression && make` on the Unix
+cells and [`php/php-windows-builder`](https://github.com/php/php-windows-builder) on Windows.
+
+It rides the **same `v*` release** for the same reason as pcov (a separate release would
+steal "latest" and 404 the other manifests' URLs), and it is **all or nothing**: `publish`
+needs `build-xdebug`, so if Xdebug fails to build the whole release is blocked, and every
+release carries all three manifests. (If a release ever lacked `xdebug-manifest.json`, Yerd's
+Xdebug downloads would break, because "latest" would move to it.)
+
+| | `yerd-dump` | `pcov` | `xdebug` |
+|---|---|---|---|
+| Build job | `build` (Rust) | `build-pcov` (upstream C) | `build-xdebug` (upstream C) |
+| Manifest | `manifest.json` | `pcov-manifest.json` | `xdebug-manifest.json` |
+| Checksums | `SHA256SUMS` | `SHA256SUMS-pcov` | `SHA256SUMS-xdebug` |
+| Artifact name | `yerd-dump-<minor>-<os>-<arch>.{so,dll}` | `pcov-<minor>-<os>-<arch>.{so,dll}` | `xdebug-<minor>-<os>-<arch>.{so,dll}` |
+
+All three manifests share the identical schema and are **never merged** — the consumer
+matches on `(php, os, arch)` only, with no extension-name field.
+
+### Pinned Xdebug version
+
+Xdebug is pinned to **`3.5.3`** via the `XDEBUG_VERSION` env in `release.yml`. Note Xdebug
+tags have **no `v` prefix** (unlike pcov's `v1.0.12`). The 3.5 line's `config.m4` supports
+exactly PHP 8.0–8.5, which covers our **8.2, 8.3, 8.4, 8.5**; 8.6 is only supported by the 3.6
+line. Every leg gates on three smokes: it loads as a Zend extension reporting the pinned
+version with `xdebug_info()`; it loads after OPcache with both reported by `php -v`; and the
+ini settings Yerd manages (`xdebug.mode=debug`, `start_with_request=yes`, `log_level=0`, JIT
+off) are honoured with no output noise.
+
+To bump, change `XDEBUG_VERSION` in `release.yml` **and** in both `ci.yml` jobs
+(`xdebug-build-smoke`, `xdebug-build-smoke-windows`). Moving to **3.6** also changes the
+supported minors (it drops 8.0/8.1 and adds 8.6), so revisit the `php` matrix at the same
+time. (The `xdebug-manifest.json` `version` field is the `v*` tag, not the Xdebug version.)
+
+Compression is disabled (`--without-xdebug-compression`; it is already off by default on
+Windows), so the built module has no host `libz` dependency — the Unix legs print
+`otool -L` / `readelf -d` and fail on any `libz` (or, on macOS, Homebrew/`/usr/local`) link.
+
+Neither upstream licence is MIT: `LICENSE-xdebug` (the Xdebug License) and `LICENSE-pcov`
+(the PHP License) are fetched from the pinned tags and attached to every release to meet
+their redistribution-notice requirements.
+
+> **Windows build note.** The Windows cell builds the same pinned `3.5.3` tag via
+> `php/php-windows-builder/extension` with `run-tests: false`. The `.dll` inside the build
+> zip is versioned (e.g. `php_xdebug-3.5.3-8.4-nts-vs17-x86_64.dll`); the staging step
+> asserts the zip is `-nts-`/64-bit, extracts `php_xdebug*.dll`, and renames it to
+> `xdebug-<minor>-windows-x86_64.dll`. The `vsNN` toolset is checked against the loader PHP
+> as for pcov.

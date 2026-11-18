@@ -145,6 +145,98 @@ jobs:
             'exit(extension_loaded("pcov") && function_exists("pcov\\start") && function_exists("pcov\\collect") ? 0 : 1);'
           echo "ok: pcov ${{ matrix.php }} (${{ matrix.cell.label }}) built and loaded"
 
+  # Same idea as pcov-build-smoke, for upstream Xdebug: build from the pinned
+  # source on the two Unix toolchains (floor 8.2 + ceiling 8.5) and run the same
+  # three smokes release.yml's build-xdebug gates on, loaded via zend_extension=
+  # (never extension=). The Windows path is xdebug-build-smoke-windows below.
+  xdebug-build-smoke:
+    name: xdebug build • smoke (${{ matrix.cell.label }}, PHP ${{ matrix.php }})
+    runs-on: ${{ matrix.cell.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ["8.2", "8.5"]
+        cell:
+          - { os: ubuntu-22.04, label: linux-x86_64, target_os: linux }
+          - { os: macos-latest, label: macos-aarch64, target_os: macos }
+    env:
+      XDEBUG_VERSION: "3.5.3"
+    steps:
+      - name: Install PHP (NTS, with dev headers + phpize)
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          coverage: none
+          tools: none
+
+      - name: Fetch pinned xdebug source
+        run: |
+          set -euo pipefail
+          # NB: no `v` prefix on Xdebug tags.
+          curl -fsSL "https://github.com/xdebug/xdebug/archive/refs/tags/${XDEBUG_VERSION}.tar.gz" -o xdebug-src.tar.gz
+          mkdir -p xdebug-src
+          tar -xzf xdebug-src.tar.gz -C xdebug-src --strip-components=1
+          test -f xdebug-src/xdebug.c || { echo "FAIL: xdebug.c not found"; exit 1; }
+
+      - name: Build xdebug
+        run: |
+          set -euo pipefail
+          # Compression off → no host libz dependency (same as release.yml).
+          # Xdebug doesn't include php_pcre.h, so no macOS pcre2 fix is needed.
+          cd xdebug-src
+          phpize
+          ./configure --enable-xdebug --without-xdebug-compression
+          make -j"$(getconf _NPROCESSORS_ONLN)"
+          if [ -f modules/xdebug.so ]; then so="modules/xdebug.so"; else so=".libs/xdebug.so"; fi
+          echo "XDEBUG_SO=$PWD/$so" >> "$GITHUB_ENV"
+
+      - name: Xdebug smoke 1 — zend_extension load + version + API
+        shell: bash
+        run: |
+          set -euo pipefail
+          if php -d zend_extension="$XDEBUG_SO" -d display_startup_errors=1 -r \
+               'exit(extension_loaded("xdebug") && phpversion("xdebug") === getenv("XDEBUG_VERSION") && function_exists("xdebug_info") ? 0 : 1);' \
+               2>/tmp/1.err; then
+            echo "ok: xdebug $XDEBUG_VERSION loaded as zend_extension with xdebug_info"
+          else
+            echo "FAIL: xdebug did not load / wrong version / missing xdebug_info"; cat /tmp/1.err || true; exit 1
+          fi
+
+      - name: Xdebug smoke 2 — loads after OPcache
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Only add -d zend_extension=opcache when OPcache isn't already loaded
+          # (else "already loaded" warning). $opc is literal words → unquoted.
+          pv="$(php -v)"
+          if grep -q "with Zend OPcache" <<<"$pv"; then opc=""; echo "opcache: already loaded"
+          else opc="-d zend_extension=opcache"; echo "opcache: loaded via -d"; fi
+          if v="$(php $opc -d zend_extension="$XDEBUG_SO" -v 2>&1)" \
+               && grep -q "with Zend OPcache" <<<"$v" \
+               && grep -qF "with Xdebug v${XDEBUG_VERSION}" <<<"$v"; then
+            echo "$v"; echo "ok: OPcache + Xdebug v${XDEBUG_VERSION} both reported"
+          else
+            echo "FAIL: php -v did not report both OPcache and Xdebug"; echo "${v:-}"; exit 1
+          fi
+
+      - name: Xdebug smoke 3 — managed ini, no noise
+        shell: bash
+        run: |
+          set -euo pipefail
+          pv="$(php -v)"
+          if grep -q "with Zend OPcache" <<<"$pv"; then opc=""; echo "opcache: already loaded"
+          else opc="-d zend_extension=opcache"; echo "opcache: loaded via -d"; fi
+          # PHP's ini parser turns `yes` into "1" (Xdebug treats "1" as yes).
+          if out="$(php $opc -d opcache.enable_cli=1 -d opcache.jit=disable \
+                 -d zend_extension="$XDEBUG_SO" -d xdebug.mode=debug -d xdebug.start_with_request=yes \
+                 -d xdebug.log_level=0 \
+                 -r 'echo ini_get("xdebug.mode"), "|", ini_get("xdebug.start_with_request");' 2>&1)" \
+               && [ "$out" = "debug|1" ]; then
+            echo "ok: managed ini honoured, no noise"
+          else
+            echo "FAIL: got '${out:-}'"; exit 1
+          fi
+
   # Windows yerd-dump build + load smoke (one minor) so a Windows-specific compile
   # break (nightly/abi_vectorcall, dev-pack download, lld-link) is caught on PRs,
   # not only at release time. Mirrors release.yml's build job Windows leg; fmt/
@@ -247,3 +339,100 @@ jobs:
           php -d extension="$PWD/$dll" -d display_startup_errors=1 -r \
             'exit(extension_loaded("pcov") && function_exists("pcov\\start") && function_exists("pcov\\collect") ? 0 : 1);'
           echo "ok: pcov ${{ matrix.php }} (windows-x86_64) built and loaded"
+
+  # Windows Xdebug build (nmake, via php-windows-builder) + the same three smokes.
+  # Covers floor (8.2) + ceiling (8.5), like pcov-build-smoke-windows.
+  xdebug-build-smoke-windows:
+    name: xdebug build • smoke (windows x86_64, PHP ${{ matrix.php }})
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ["8.2", "8.5"]
+    env:
+      XDEBUG_VERSION: "3.5.3"
+    steps:
+      - name: Install PHP (NTS)
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          coverage: none
+          tools: none
+        env:
+          phpts: nts
+
+      - name: Build xdebug (php-windows-builder / nmake)
+        # Neither the action tag (`1.8.1`) nor the Xdebug tag has a `v` prefix.
+        uses: php/php-windows-builder/extension@1.8.1
+        with:
+          extension-url: https://github.com/xdebug/xdebug
+          extension-ref: ${{ env.XDEBUG_VERSION }}
+          # Xdebug's config.w32 uses ARG_WITH and its composer.json lists no
+          # configure options, so the builder enables nothing by default — pass
+          # --with-xdebug explicitly or configure builds an empty extension set.
+          args: --with-xdebug
+          php-version: ${{ matrix.php }}
+          arch: x64
+          ts: nts
+          run-tests: false
+
+      - name: Locate built dll
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          zips=(artifacts/*.zip)
+          [ "${#zips[@]}" -eq 1 ] || { echo "FAIL: expected 1 build zip, found ${#zips[@]}"; exit 1; }
+          mkdir -p unzipped
+          unzip -o "${zips[0]}" -d unzipped >/dev/null
+          # Module inside is versioned (php_xdebug-3.5.3-8.2-nts-vs16-x86_64.dll).
+          dll="$(find unzipped -iname 'php_xdebug*.dll' | head -1)"
+          [ -n "$dll" ] || { echo "FAIL: no php_xdebug*.dll found"; find unzipped; exit 1; }
+          echo "XDEBUG_SO=$PWD/$dll" >> "$GITHUB_ENV"
+
+      - name: Xdebug smoke 1 — zend_extension load + version + API
+        shell: bash
+        run: |
+          set -euo pipefail
+          if php -d zend_extension="$XDEBUG_SO" -d display_startup_errors=1 -r \
+               'exit(extension_loaded("xdebug") && phpversion("xdebug") === getenv("XDEBUG_VERSION") && function_exists("xdebug_info") ? 0 : 1);' \
+               2>/tmp/1.err; then
+            echo "ok: xdebug $XDEBUG_VERSION loaded as zend_extension with xdebug_info"
+          else
+            echo "FAIL: xdebug did not load / wrong version / missing xdebug_info"; cat /tmp/1.err || true; exit 1
+          fi
+
+      - name: Xdebug smoke 2 — loads after OPcache
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Only add -d zend_extension=opcache when OPcache isn't already loaded
+          # (else "already loaded" warning). $opc is literal words → unquoted.
+          pv="$(php -v)"
+          if grep -q "with Zend OPcache" <<<"$pv"; then opc=""; echo "opcache: already loaded"
+          else opc="-d zend_extension=opcache"; echo "opcache: loaded via -d"; fi
+          if v="$(php $opc -d zend_extension="$XDEBUG_SO" -v 2>&1)" \
+               && grep -q "with Zend OPcache" <<<"$v" \
+               && grep -qF "with Xdebug v${XDEBUG_VERSION}" <<<"$v"; then
+            echo "$v"; echo "ok: OPcache + Xdebug v${XDEBUG_VERSION} both reported"
+          else
+            echo "FAIL: php -v did not report both OPcache and Xdebug"; echo "${v:-}"; exit 1
+          fi
+
+      - name: Xdebug smoke 3 — managed ini, no noise
+        shell: bash
+        run: |
+          set -euo pipefail
+          pv="$(php -v)"
+          if grep -q "with Zend OPcache" <<<"$pv"; then opc=""; echo "opcache: already loaded"
+          else opc="-d zend_extension=opcache"; echo "opcache: loaded via -d"; fi
+          # PHP's ini parser turns `yes` into "1" (Xdebug treats "1" as yes).
+          if out="$(php $opc -d opcache.enable_cli=1 -d opcache.jit=disable \
+                 -d zend_extension="$XDEBUG_SO" -d xdebug.mode=debug -d xdebug.start_with_request=yes \
+                 -d xdebug.log_level=0 \
+                 -r 'echo ini_get("xdebug.mode"), "|", ini_get("xdebug.start_with_request");' 2>&1)" \
+               && [ "$out" = "debug|1" ]; then
+            echo "ok: managed ini honoured, no noise"
+          else
+            echo "FAIL: got '${out:-}'"; exit 1
+          fi
