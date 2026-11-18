@@ -503,6 +503,10 @@ jobs:
         with:
           extension-url: https://github.com/xdebug/xdebug
           extension-ref: ${{ env.XDEBUG_VERSION }}
+          # Xdebug's config.w32 uses ARG_WITH and its composer.json lists no
+          # configure options, so the builder enables nothing by default — pass
+          # --with-xdebug explicitly or configure builds an empty extension set.
+          args: --with-xdebug
           php-version: ${{ matrix.php }}
           arch: x64
           ts: nts
@@ -640,6 +644,8 @@ jobs:
           pv="$(php -v)"
           if grep -q "with Zend OPcache" <<<"$pv"; then opc=""; echo "opcache: already loaded"
           else opc="-d zend_extension=opcache"; echo "opcache: loaded via -d"; fi
+          # NB: PHP's ini parser turns a bare `yes` into "1" before Xdebug sees it,
+          # so ini_get() reports "1"; Xdebug treats "1" as yes (src/lib/lib.c).
           # The ini settings Yerd manages must be honoured, with JIT off and no IDE
           # listening: log_level=0 means NOTHING else may be printed (catches a
           # noisy "could not connect" or a load warning).
@@ -649,7 +655,7 @@ jobs:
                    -d zend_extension="$so" -d xdebug.mode=debug -d xdebug.start_with_request=yes \
                    -d xdebug.log_level=0 \
                    -r 'echo ini_get("xdebug.mode"), "|", ini_get("xdebug.start_with_request");' 2>&1)" \
-                 && [ "$out" = "debug|yes" ]; then
+                 && [ "$out" = "debug|1" ]; then
               echo "ok: managed ini honoured, no noise (attempt $attempt)"; exit 0
             fi
             echo "attempt $attempt failed; retrying…"; sleep 1
